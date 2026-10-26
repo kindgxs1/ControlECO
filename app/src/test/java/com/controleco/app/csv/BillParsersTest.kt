@@ -254,6 +254,22 @@ class BillParsersTest {
     }
 
     @Test
+    fun `parse alipay 等待确认收货计入支出`() {
+        val csv = listOf(
+            "导出信息：",
+            "------------------------支付宝支付科技有限公司  电子客户回单------------------------",
+            "交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,",
+            "2026-10-21 21:47:50,运动户外,tb**9,186******04,春秋新款袜子,支出,5.80,华夏银行信用卡(4362),等待确认收货,2026102123001160371429961339\t,T200P5127877873219042321\t,,",
+        ).joinToString("\n")
+        val bill = BillParsers.parse(csv.toByteArray(Charset.forName("GBK")))!!
+        assertEquals(1, bill.rows.size)
+        assertEquals(0, bill.skippedStatus)
+        assertEquals(TxType.EXPENSE, bill.rows[0].type)
+        assertEquals(580L, bill.rows[0].amountCents)
+        assertEquals(RefundMark.NONE, bill.rows[0].refundMark)
+    }
+
+    @Test
     fun `parse alipay legacy csv`() {
         val bill = BillParsers.parse(alipayCsvLegacy.toByteArray(Charset.forName("GBK")))!!
         assertEquals(BillSource.ALIPAY, bill.source)

@@ -197,6 +197,10 @@ interface TransactionDao {
     @Query("SELECT * FROM transactions WHERE id = :id")
     suspend fun getById(id: Long): TransactionEntity?
 
+    /** 账单导入去重用：取区间内已有记录（含手动/自动捕获/历史导入） */
+    @Query("SELECT * FROM transactions WHERE timestamp >= :startMillis AND timestamp < :endMillis")
+    suspend fun getEntitiesInRange(startMillis: Long, endMillis: Long): List<TransactionEntity>
+
     /** 自动入账后页面通道捕获同笔：按捕获去重键（externalId = "NTF:" + dedupKey）回填更全的页面信息 */
     @Query(
         """UPDATE transactions

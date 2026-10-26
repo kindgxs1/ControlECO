@@ -86,7 +86,7 @@ private val HERO_SIGNAL: Color
  *
  * 入口一个不少：三个入账方式开关、待确认账单、监听的 App、商户归类、保活与自启动、权限
  * （含通知监听 / 无障碍 / 悬浮窗 / 短信的汇总胶囊）、自动更新、检查更新、开发者功能（内含
- * 捕获日志、溯源）、关于与版本。账本（账户 / 账单导入）入口仍在个人页，不在此页重复。
+ * 捕获日志、溯源）、关于与版本。账户入口在个人页；账单导入放在「记账」分区，与导入页教程入口一致。
  */
 @Composable
 fun SettingsScreen(
@@ -96,6 +96,7 @@ fun SettingsScreen(
     onOpenWatchedApps: () -> Unit,
     onOpenMerchantRules: () -> Unit,
     onOpenPending: () -> Unit,
+    onOpenImport: () -> Unit,
     onOpenKeepAlive: () -> Unit,
     onOpenDeveloper: () -> Unit,
     onOpenAbout: () -> Unit,
@@ -248,6 +249,18 @@ fun SettingsScreen(
                     depositStartDraft = depositStart ?: YearMonth.now()
                     showDepositStart = true
                 },
+            )
+            SettingsDivider()
+            // 微信/支付宝导出账单导入：与账本已有记录比对后，只写入缺失的部分
+            SettingsRow(
+                title = "账单导入",
+                subtitle = "微信 xlsx / 支付宝 CSV，自动跳过账本中已有的记录",
+                icon = EcoIcons.File,
+                iconTint = MaterialTheme.eco.blue,
+                trail = "导入",
+                trailColor = MaterialTheme.eco.blue,
+                showChevron = true,
+                onClick = onOpenImport,
             )
         }
 

@@ -233,7 +233,7 @@ fun AccBookNav(
         // ---- 个人页 → 打赏：收款码独立页（全屏预览 / 保存到相册） ----
         composable("reward") { RewardScreen(onBack = { navController.popBackStack() }) }
 
-        // ---- 设置体系：设置 →（权限 / 开发者功能 / 关于）；账户/账单导入在个人页 ----
+        // ---- 设置体系：设置 →（权限 / 账单导入 / 开发者功能 / 关于）；账户入口在个人页 ----
         composable("settings") {
             SettingsScreen(
                 vm = vm,
@@ -242,6 +242,7 @@ fun AccBookNav(
                 onOpenWatchedApps = { navController.navigate("settings/watchedApps") },
                 onOpenMerchantRules = { navController.navigate("settings/merchantRules") },
                 onOpenPending = { navController.navigate("pending") },
+                onOpenImport = { navController.navigate("settings/import") },
                 onOpenKeepAlive = { navController.navigate("keepAlive") },
                 onOpenDeveloper = { navController.navigate("settings/developer") },
                 onOpenAbout = { navController.navigate("settings/about") },

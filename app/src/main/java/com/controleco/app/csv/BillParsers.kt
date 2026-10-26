@@ -200,7 +200,11 @@ object BillParsers {
             when {
                 status.contains("退款") && type == TxType.INCOME -> { mark = RefundMark.REFUND_INCOME; refundCount++ }
                 type == TxType.EXPENSE && status == "交易关闭" -> { mark = RefundMark.REFUNDED_EXPENSE; refundCount++ }
-                !(status.contains("成功") || status.contains("已到账")) -> { skipStatus++; continue }
+                // 担保交易已付款、等待收货也是真实支出，不能当"未完成"跳过
+                !(status.contains("成功") || status.contains("已到账") || status == "等待确认收货") -> {
+                    skipStatus++
+                    continue
+                }
                 else -> {}
             }
 

@@ -88,13 +88,14 @@ import com.controleco.app.util.Money
 
 /**
  * 账单导入：选择文件 → 解析 → 预览 → 导入完成，四个阶段同页。
- * 解析器只认微信/支付宝导出的账单；导入按"来源 + 时间 + 金额 + 方向"去重。
+ * 解析器只认微信/支付宝导出的账单；导入先与账本已有记录比对，只写入缺失的记录。
  */
 @Composable
 fun ImportScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     val bill by vm.parsedBill.collectAsStateWithLifecycle()
     val error by vm.importError.collectAsStateWithLifecycle()
     val done by vm.importDone.collectAsStateWithLifecycle()
+    val duplicateCount by vm.importDuplicateCount.collectAsStateWithLifecycle()
     val accounts by vm.accounts.collectAsStateWithLifecycle()
 
     var accountId by remember { mutableStateOf<Long?>(null) }
@@ -153,6 +154,7 @@ fun ImportScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                     bill = b,
                     accounts = accounts,
                     accountId = accountId,
+                    duplicateCount = duplicateCount,
                     error = error,
                     onSelectAccount = { accountId = it },
                     onCommit = { accountId?.let { vm.commitImport(b, it) } },
@@ -232,7 +234,7 @@ private fun ImportIdleStage(
     }
 
     EcoPageNote(
-        "文件只在本机解析；导入会跳过已存在的记录（按来源 + 时间 + 金额 + 方向去重）。",
+        "文件只在本机解析；导入会先与账本已有记录比对，重复的自动跳过。",
     )
 
     EcoSectionHead(title = "导出方法", aside = "HOW TO")
@@ -343,7 +345,7 @@ private fun ImportParsingStage() {
         )
         Spacer(Modifier.height(5.dp))
         Text(
-            "读取行、识别来源、生成去重键",
+            "读取行、识别来源、比对账本",
             style = EcoType.PageNote,
             color = c.muted,
         )
@@ -379,6 +381,7 @@ private fun ImportPreviewStage(
     bill: ParsedBill,
     accounts: List<AccountEntity>,
     accountId: Long?,
+    duplicateCount: Int?,
     error: String?,
     onSelectAccount: (Long) -> Unit,
     onCommit: () -> Unit,
@@ -387,6 +390,8 @@ private fun ImportPreviewStage(
     val c = MaterialTheme.eco
     ImportStageBar(current = 2)
     val previewRows = bill.rows.take(8)
+    val duplicated = (duplicateCount ?: 0).coerceIn(0, bill.rows.size)
+    val newCount = bill.rows.size - duplicated
 
     error?.let {
         Spacer(Modifier.height(10.dp))
@@ -415,6 +420,14 @@ private fun ImportPreviewStage(
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "其中退款相关 ${bill.refundCount} 条（已入库：退款收入记入收入，被退款的原支出标记为「已退款」、不再计入支出）",
+                        style = EcoType.PageNote,
+                        color = c.amber,
+                    )
+                }
+                if (duplicated > 0) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "已与账本比对：$duplicated 条账本中已有，将自动跳过；本次实际导入 $newCount 条。",
                         style = EcoType.PageNote,
                         color = c.amber,
                     )
@@ -472,9 +485,9 @@ private fun ImportPreviewStage(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 EcoPrimaryButton(
-                    text = "确认导入 ${bill.rows.size} 条",
+                    text = if (newCount > 0) "确认导入 $newCount 条" else "账本中已有这些记录",
                     onClick = onCommit,
-                    enabled = accountId != null && bill.rows.isNotEmpty(),
+                    enabled = accountId != null && newCount > 0,
                 )
                 EcoGhostButton(text = "换一个文件", onClick = onReset)
             }
@@ -482,7 +495,7 @@ private fun ImportPreviewStage(
     }
 
     EcoPageNote(
-        "预览只显示前 8 条；导入会跳过已存在的记录（按来源 + 时间 + 金额 + 方向去重）。",
+        "预览只显示前 8 条；导入会与账本比对（同方向、同金额，且单号相同 / 时间相近 / 同日同商户），只写入缺失记录。",
     )
 }
 
@@ -591,7 +604,7 @@ private fun ImportDoneStage(
     Spacer(Modifier.height(8.dp))
     EcoGhostButton(text = "返回", onClick = onBack)
 
-    EcoPageNote("导入的记录可在账单页查看；重复记录按来源 + 时间 + 金额 + 方向自动跳过。")
+    EcoPageNote("导入的记录可在账单页查看；与账本已有记录重复的条目已自动跳过。")
 }
 
 // ---------- 阶段条 / 错误条 ----------

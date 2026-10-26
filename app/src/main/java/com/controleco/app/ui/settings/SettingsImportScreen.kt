@@ -27,7 +27,7 @@ fun SettingsImportScreen(
         SettingsPane {
             SettingsRow(
                 title = "选择账单文件",
-                subtitle = "微信 xlsx / 支付宝 CSV",
+                subtitle = "微信 xlsx / 支付宝 CSV，导入时自动跳过账本已有记录",
                 icon = EcoIcons.File,
                 iconTint = MaterialTheme.eco.blue,
                 showChevron = true,

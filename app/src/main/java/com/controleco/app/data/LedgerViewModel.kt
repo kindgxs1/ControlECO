@@ -36,6 +36,7 @@ import com.controleco.app.data.db.TransactionRow
 import com.controleco.app.data.db.TypeTotalRow
 import com.controleco.app.data.db.TxSource
 import com.controleco.app.data.db.TxType
+import com.controleco.app.data.imports.BillDeduper
 import com.controleco.app.data.backup.BackupCsv
 import com.controleco.app.data.backup.BackupStore
 import com.controleco.app.data.budget.Budget
@@ -1291,10 +1292,15 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     private val _importDone = MutableStateFlow<ImportCommitResult?>(null)
     val importDone: StateFlow<ImportCommitResult?> = _importDone
 
+    /** 预览阶段已算好的「与账本重复、将跳过」条数；null = 尚未比对完成 */
+    private val _importDuplicateCount = MutableStateFlow<Int?>(null)
+    val importDuplicateCount: StateFlow<Int?> = _importDuplicateCount
+
     fun parseBillFile(uriString: String) {
         _parsedBill.value = null
         _importError.value = null
         _importDone.value = null
+        _importDuplicateCount.value = null
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val context = getApplication<AccBookApp>()
@@ -1302,6 +1308,9 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                     ?: throw IllegalStateException("无法读取所选文件")
                 val bill = BillParsers.parse(bytes)
                     ?: throw IllegalArgumentException("无法识别账单格式，请选择微信/支付宝导出的账单 CSV")
+                // 预览前先与账本已有记录比对，页面能直接显示实际会写入的条数
+                val existing = existingForImport(bill)
+                _importDuplicateCount.value = BillDeduper.partition(bill.rows, existing).duplicateCount
                 _parsedBill.value = bill
             } catch (e: Exception) {
                 AppLog.e("import", "parse failed", e)
@@ -1310,11 +1319,21 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 导入比对用的已有记录：账单时间范围前后各放宽一天，覆盖时区与跨日 */
+    private suspend fun existingForImport(bill: ParsedBill): List<TransactionEntity> {
+        val min = bill.rows.minOfOrNull { it.timestamp } ?: return emptyList()
+        val max = bill.rows.maxOfOrNull { it.timestamp } ?: return emptyList()
+        val margin = 24L * 60 * 60 * 1000
+        return txDao.getEntitiesInRange(min - margin, max + margin)
+    }
+
     fun commitImport(bill: ParsedBill, accountId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                // 提交前再比对一次（解析到确认之间账本可能新增记录），只写入真正缺失的
+                val partition = BillDeduper.partition(bill.rows, existingForImport(bill))
                 val cats = categoryDao.getAll()
-                val entities = bill.rows.map { row ->
+                val entities = partition.newRows.map { row ->
                     // 退款收入一律归「退款」分类：导入时按商户名猜出的购物/餐饮对退款行没有意义
                     val categoryId = (if (row.refundMark == RefundMark.REFUND_INCOME) {
                         RefundCategory.incomeCategoryId(cats)
@@ -1346,9 +1365,13 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 val ids = txDao.insertAllIgnore(entities)
                 val inserted = ids.count { it != -1L }
-                val duplicated = ids.count { it == -1L }
+                // 已存在而跳过 + 并发写入/同单号冲突，都算重复
+                val duplicated = partition.duplicateCount + ids.count { it == -1L }
                 AppLog.i("import", "committed: inserted=$inserted duplicated=$duplicated")
-                withContext(Dispatchers.Main) { _importDone.value = ImportCommitResult(inserted, duplicated) }
+                withContext(Dispatchers.Main) {
+                    _importDuplicateCount.value = null
+                    _importDone.value = ImportCommitResult(inserted, duplicated)
+                }
             } catch (e: Exception) {
                 AppLog.e("import", "commit failed", e)
                 withContext(Dispatchers.Main) { _importError.value = e.message ?: "导入失败" }
@@ -1360,6 +1383,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         _parsedBill.value = null
         _importError.value = null
         _importDone.value = null
+        _importDuplicateCount.value = null
     }
 
     // ---------- 自动记账（阶段二：通知监听通道） ----------
