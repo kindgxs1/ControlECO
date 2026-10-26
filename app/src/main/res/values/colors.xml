@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 图标底色（与 ic_launcher_art 图案外圈的深绿一致）：图案本身已铺满背景层，
-         这个色值留给"只取纯色底"的系统表面兜底 -->
-    <color name="ic_launcher_background">#055335</color>
+    <!-- 图标底色（自适应图标背景层）：新的云朵钱包图案本身是透明底，
+         白底能让图案的黑色描边和蓝绿配色保持干净；这个色值也用于"只取纯色底"的系统表面兜底 -->
+    <color name="ic_launcher_background">#FFFFFF</color>
 </resources>

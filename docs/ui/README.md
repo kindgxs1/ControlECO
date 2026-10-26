@@ -45,7 +45,7 @@
 | 记账溯源 | `captureTrace` | `ui/debug/CaptureTraceScreen.kt` | [14-捕获溯源](14-捕获溯源.md) |
 | 设置首页 | `settings` | `ui/settings/SettingsScreen.kt` | [15-设置首页](15-设置首页.md) |
 | 设置 → 账户入口 | `settings/account` | `ui/settings/SettingsAccountScreen.kt` | [16-设置-账户入口](16-设置-账户入口.md) |
-| 设置 → 账单导入 | `settings/import` | `ui/settings/SettingsImportScreen.kt` | [17-设置-账单导入](17-设置-账单导入.md) |
+| 备份还原 → 账单导入 | `billImport` | `ui/settings/SettingsImportScreen.kt` | [17-设置-账单导入](17-设置-账单导入.md) |
 | 设置 → 权限 | `settings/permissions` | `ui/settings/SettingsPermissionScreen.kt` | [18-设置-权限](18-设置-权限.md) |
 | 设置 → 监听的 App | `settings/watchedApps` | `ui/settings/SettingsWatchedAppsScreen.kt` | [19-设置-监听App](19-设置-监听App.md) |
 | 设置 → 商户归类 | `settings/merchantRules` | `ui/settings/SettingsMerchantRulesScreen.kt` | [20-设置-商户归类](20-设置-商户归类.md) |

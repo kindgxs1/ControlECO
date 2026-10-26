@@ -8,6 +8,8 @@ build/
 .externalNativeBuild
 .cxx
 *.apk.idsig
+# 构建产物 APK 不入库（历史版本 v1.0.6/v1.0.7 仍保留在仓库中）
+/*.apk
 .zcode/
 
 # 真实账单样例（含个人隐私，禁止入库）

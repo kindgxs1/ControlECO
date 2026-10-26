@@ -36,9 +36,12 @@ import com.controleco.app.ui.eco.ecoBottomContentPadding
  *
  * 导出内容：账户、一级 + 二级分类、全部账单、分期与周期计划、设置（预算、货币、主题等）。
  * 导入会覆盖本机现有账单与设置，所以先二次确认。
+ *
+ * 「导入还原」下方是「账单导入」：微信 / 支付宝流水与账本比对后只写入缺失记录，
+ * 与备份还原同属"把外部数据带进账本"的入口。
  */
 @Composable
-fun BackupScreen(vm: LedgerViewModel, onBack: () -> Unit) {
+fun BackupScreen(vm: LedgerViewModel, onBack: () -> Unit, onOpenImport: () -> Unit) {
     var pendingImport by remember { mutableStateOf(false) }
 
     val exporter = rememberLauncherForActivityResult(
@@ -97,6 +100,15 @@ fun BackupScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                             subtitle = "支持 JSON / CSV / Excel(.xlsx) 备份文件",
                             icon = EcoIcons.File,
                             onClick = { pendingImport = true },
+                            showChevron = true,
+                        )
+                        EcoRowDivider()
+                        // 微信/支付宝导出账单：与账本已有记录比对后，只写入缺失的部分
+                        EcoRow(
+                            title = "账单导入",
+                            subtitle = "微信 xlsx / 支付宝 CSV，自动跳过账本中已有的记录",
+                            icon = EcoIcons.Receipt,
+                            onClick = onOpenImport,
                             showChevron = true,
                         )
                     }

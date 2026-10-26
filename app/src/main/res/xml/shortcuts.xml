@@ -49,7 +49,7 @@
             android:targetPackage="com.controleco.app">
             <extra
                 android:name="controleco.route"
-                android:value="settings/import" />
+                android:value="billImport" />
         </intent>
     </shortcut>
 </shortcuts>

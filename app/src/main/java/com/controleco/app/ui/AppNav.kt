@@ -142,6 +142,8 @@ fun AccBookNav(
             route.startsWith(CaptureCenter.ROUTE_EDIT_PREFIX) -> navController.navigate(route)
             // 快捷方式/磁贴：直接进快速记账
             route == "quickAdd" -> navController.navigate("quickAdd")
+            // 长按图标「账单导入」快捷方式：直达导入教程页（入口在备份还原页里）
+            route == "billImport" -> navController.navigate("billImport")
             // 设置子页直达（调试/客服引导用：开发者功能、权限页）
             route == "settings/developer" || route == "settings/permissions" ->
                 navController.navigate(route)
@@ -208,7 +210,13 @@ fun AccBookNav(
         }
         composable("calendar") { CalendarScreen(vm = vm, onBack = { navController.popBackStack() }) }
         composable("plan") { PlanScreen(vm = vm, onBack = { navController.popBackStack() }) }
-        composable("backup") { BackupScreen(vm = vm, onBack = { navController.popBackStack() }) }
+        composable("backup") {
+            BackupScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onOpenImport = { navController.navigate("billImport") },
+            )
+        }
         composable("budget") { MonthBudgetScreen(vm = vm, onBack = { navController.popBackStack() }) }
         composable("deposit") { DepositScreen(vm = vm, onBack = { navController.popBackStack() }) }
         composable("quickAdd") { QuickAddScreen(vm = vm, onBack = { navController.popBackStack() }) }
@@ -233,7 +241,7 @@ fun AccBookNav(
         // ---- 个人页 → 打赏：收款码独立页（全屏预览 / 保存到相册） ----
         composable("reward") { RewardScreen(onBack = { navController.popBackStack() }) }
 
-        // ---- 设置体系：设置 →（权限 / 账单导入 / 开发者功能 / 关于）；账户入口在个人页 ----
+        // ---- 设置体系：设置 →（权限 / 保活 / 开发者功能 / 关于）；账户入口在个人页 ----
         composable("settings") {
             SettingsScreen(
                 vm = vm,
@@ -242,7 +250,6 @@ fun AccBookNav(
                 onOpenWatchedApps = { navController.navigate("settings/watchedApps") },
                 onOpenMerchantRules = { navController.navigate("settings/merchantRules") },
                 onOpenPending = { navController.navigate("pending") },
-                onOpenImport = { navController.navigate("settings/import") },
                 onOpenKeepAlive = { navController.navigate("keepAlive") },
                 onOpenDeveloper = { navController.navigate("settings/developer") },
                 onOpenAbout = { navController.navigate("settings/about") },
@@ -255,7 +262,8 @@ fun AccBookNav(
                 onOpenCategories = { navController.navigate("categories") },
             )
         }
-        composable("settings/import") {
+        // 账单导入教程：入口在「备份还原」→「导入还原」下方
+        composable("billImport") {
             SettingsImportScreen(
                 onBack = { navController.popBackStack() },
                 onImport = { navController.navigate("import") },
