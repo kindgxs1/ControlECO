@@ -17,14 +17,16 @@ val gitCommitShort: String = runCatching {
 android {
     namespace = "com.controleco.app"
     compileSdk = 35
+    // 与已安装的 SDK 保持一致，避免构建时再去下载默认的 build-tools 34
+    buildToolsVersion = "35.0.0"
 
     defaultConfig {
         applicationId = "com.controleco.app"
         minSdk = 26
         targetSdk = 35
         // 每次带修改的构建把第三位 +1；1.0.0 起为正式版本，版本名不再带 -beta 后缀
-        versionCode = 41
-        versionName = "1.0.6"
+        versionCode = 42
+        versionName = "1.0.7"
         // 内置构建提交短哈希，供「检查更新」判断本版本分支仓库是否有新提交
         buildConfigField("String", "GIT_COMMIT", "\"$gitCommitShort\"")
     }
@@ -37,6 +39,14 @@ android {
             // 换成独立发布密钥需要用户先卸载（账本会一起没），1.0.0 不做。
             signingConfig = signingConfigs.getByName("debug")
         }
+    }
+    // 固定使用仓库内的 debug.keystore：CI/沙箱的 HOME 每次可能是新的，
+    // 用默认 ~/.android/debug.keystore 会生成新密钥，导致后续版本无法覆盖安装。
+    signingConfigs.getByName("debug").apply {
+        storeFile = rootProject.file("signing/debug.keystore")
+        storePassword = "android"
+        keyAlias = "androiddebugkey"
+        keyPassword = "android"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

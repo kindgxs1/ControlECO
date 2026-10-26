@@ -19,6 +19,10 @@ class CalendarMathTest {
         cents: Long,
         date: LocalDate,
         refund: RefundMark = RefundMark.NONE,
+        countInStats: Boolean = true,
+        refundLinkId: Long = 0L,
+        linkedRefundCents: Long = 0L,
+        linkedExpenseCents: Long = 0L,
     ) = TransactionRow(
         id = 0,
         type = type,
@@ -32,6 +36,10 @@ class CalendarMathTest {
         accountId = 1,
         accountName = "账户",
         refundMark = refund,
+        countInStats = countInStats,
+        refundLinkId = refundLinkId,
+        linkedRefundCents = linkedRefundCents,
+        linkedExpenseCents = linkedExpenseCents,
     )
 
     @Test
@@ -77,5 +85,53 @@ class CalendarMathTest {
     fun `没有账单的日期不出现在结果里`() {
         val rows = listOf(row(TxType.EXPENSE, 10_000, LocalDate.of(2026, 10, 5)))
         assertEquals(setOf(LocalDate.of(2026, 10, 5)), CalendarMath.byDay(rows, zone).keys)
+    }
+
+    @Test
+    fun `已关联退款按差额计入日历收支`() {
+        val expenseDay = LocalDate.of(2026, 10, 20)
+        val refundDay = LocalDate.of(2026, 10, 22)
+        val rows = listOf(
+            row(TxType.EXPENSE, 10_000, expenseDay, linkedRefundCents = 4_000),
+            row(
+                TxType.INCOME, 4_000, refundDay, RefundMark.REFUND_INCOME,
+                refundLinkId = 1, linkedExpenseCents = 10_000,
+            ),
+        )
+        val byDay = CalendarMath.byDay(rows, zone)
+        // 部分退款：支出只计差额 60，退款不计收入
+        assertEquals(6_000L, byDay[expenseDay]!!.expenseCents)
+        assertEquals(0L, byDay[refundDay]!!.incomeCents)
+        val totals = CalendarMath.totals(rows)
+        assertEquals(0L, totals.incomeCents)
+        assertEquals(6_000L, totals.expenseCents)
+    }
+
+    @Test
+    fun `退还超额_支出为0_超出部分计入日历收入`() {
+        val day = LocalDate.of(2026, 10, 24)
+        val rows = listOf(
+            row(TxType.EXPENSE, 10_000, day, linkedRefundCents = 12_000),
+            row(
+                TxType.INCOME, 12_000, day, RefundMark.REFUND_INCOME,
+                refundLinkId = 1, linkedExpenseCents = 10_000,
+            ),
+        )
+        val byDay = CalendarMath.byDay(rows, zone)[day]!!
+        assertEquals(2_000L, byDay.incomeCents)
+        assertEquals(0L, byDay.expenseCents)
+        assertEquals(2_000L, byDay.netCents)
+    }
+
+    @Test
+    fun `不计入统计的记录不影响日历收支`() {
+        val day = LocalDate.of(2026, 10, 24)
+        val rows = listOf(
+            row(TxType.INCOME, 100_000, day, countInStats = false),
+            row(TxType.EXPENSE, 30_000, day, countInStats = false),
+        )
+        val byDay = CalendarMath.byDay(rows, zone)[day]!!
+        assertEquals(0L, byDay.incomeCents)
+        assertEquals(0L, byDay.expenseCents)
     }
 }

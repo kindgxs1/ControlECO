@@ -63,12 +63,17 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.data.CategoryTree
 import com.controleco.app.data.db.CategoryEntity
+import com.controleco.app.data.db.RefundCategory
+import com.controleco.app.data.db.TransactionRow
 import com.controleco.app.data.db.TxType
 import com.controleco.app.ui.common.EcoIcons
 import com.controleco.app.ui.eco.EcoCategoryTile
+import com.controleco.app.ui.eco.EcoEmpty
 import com.controleco.app.ui.eco.EcoField
 import com.controleco.app.ui.eco.EcoFilterStrip
 import com.controleco.app.ui.eco.EcoHairline
+import com.controleco.app.ui.eco.EcoPageNote
+import com.controleco.app.ui.eco.EcoPane
 import com.controleco.app.ui.eco.EcoPrimaryButton
 import com.controleco.app.ui.eco.EcoRow
 import com.controleco.app.ui.eco.EcoRowDivider
@@ -79,9 +84,11 @@ import com.controleco.app.ui.eco.ecoPressable
 import com.controleco.app.ui.theme.EcoType
 import com.controleco.app.ui.theme.eco
 import com.controleco.app.util.Money
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 /**
  * 快速记账：金额第一——大字金额 + 三步引导 + 收支分段 + 分类折叠条 + 数字键盘 + 记一笔。
@@ -105,6 +112,12 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     var note by remember { mutableStateOf("") }
     var excludeFromAssets by remember { mutableStateOf(false) }
     var countInStats by remember { mutableStateOf(true) }
+    var linkRefund by remember { mutableStateOf(false) }
+    var linkedExpense by remember { mutableStateOf<TransactionRow?>(null) }
+    var linkSheetOpen by remember { mutableStateOf(false) }
+    var linkCandidates by remember { mutableStateOf<List<TransactionRow>>(emptyList()) }
+    var linkLoading by remember { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
     var showMore by remember { mutableStateOf(false) }
     var categoryExpanded by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -159,17 +172,43 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
         categoryId == null -> 1
         else -> 2
     }
+    // 只有「收入 → 退款」这一笔才需要手动关联原支出（退款与支出按差额统计）
+    val refundCategoryId = remember(categories) {
+        categories.firstOrNull { it.type == TxType.INCOME && it.name == RefundCategory.NAME }?.id
+    }
+    val isRefundIncome = type == TxType.INCOME && selectedCategory?.let { category ->
+        category.id == refundCategoryId ||
+            (refundCategoryId != null && category.parentId == refundCategoryId)
+    } == true
+
+    // 切走退款分类时收起关联选项，避免把关联状态带到别的记账上
+    LaunchedEffect(isRefundIncome) {
+        if (!isRefundIncome) {
+            linkRefund = false
+            linkedExpense = null
+            linkSheetOpen = false
+        }
+    }
+    // 打开关联开关时加载候选原支出（近 60 天、未退款）；失败只显示空态，不影响记账
+    LaunchedEffect(linkRefund) {
+        if (!linkRefund) return@LaunchedEffect
+        linkLoading = true
+        linkCandidates = runCatching { vm.refundCandidates() }.getOrDefault(emptyList())
+        linkLoading = false
+    }
 
     val density = LocalDensity.current
     val imeVisible = WindowInsets.ime.getBottom(density) > 0
     val contentScroll = rememberScrollState()
 
     fun save() {
+        if (saving) return
         val amount = Money.parseCents(amountText)
         when {
             amount == null || amount <= 0L -> error = "请输入有效金额"
             categoryId == null -> error = "请选择分类"
             accountId == null -> error = "请选择账户"
+            isRefundIncome && linkRefund && linkedExpense == null -> error = "请选择要关联的原支出"
             else -> {
                 // 手动记账：默认记的是"现在"（含时分），选了别的日期则沿用当前时刻
                 val zone = ZoneId.systemDefault()
@@ -178,12 +217,38 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 } else {
                     date.atTime(LocalTime.now()).atZone(zone).toInstant().toEpochMilli()
                 }
-                vm.saveTransaction(
-                    -1L, type, amount, categoryId!!, accountId!!, ts, note.trim(), counterparty.trim(),
-                    excludeFromAssets, countInStats,
-                )
-                EcoToast.show("已记一笔")
-                onBack()
+                saving = true
+                val expense = linkedExpense
+                if (isRefundIncome && linkRefund && expense != null) {
+                    // 关联路径：等落库结果再离页，失败留在本页并给出原因
+                    vm.saveLinkedRefundIncome(
+                        amountCents = amount,
+                        categoryId = categoryId!!,
+                        accountId = accountId!!,
+                        timestamp = ts,
+                        note = note.trim(),
+                        counterparty = counterparty.trim(),
+                        expenseId = expense.id,
+                        excludeFromAssets = excludeFromAssets,
+                        countInStats = countInStats,
+                        onDone = { err ->
+                            saving = false
+                            if (err == null) {
+                                EcoToast.show("已记一笔")
+                                onBack()
+                            } else {
+                                error = err
+                            }
+                        },
+                    )
+                } else {
+                    vm.saveTransaction(
+                        -1L, type, amount, categoryId!!, accountId!!, ts, note.trim(), counterparty.trim(),
+                        excludeFromAssets, countInStats,
+                    )
+                    EcoToast.show("已记一笔")
+                    onBack()
+                }
             }
         }
     }
@@ -299,6 +364,26 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                         checked = countInStats,
                         onCheckedChange = { countInStats = it },
                     )
+                    if (isRefundIncome) {
+                        Spacer(Modifier.height(6.dp))
+                        // 手动记的退款可以指定被退款的原支出：关联后按差额统计（支持部分退款）
+                        TxSwitchField(
+                            label = "关联退款账单",
+                            subtitle = "开启后手动选择被退款的原支出，退款与支出按差额统计",
+                            checked = linkRefund,
+                            onCheckedChange = {
+                                linkRefund = it
+                                if (!it) linkedExpense = null
+                            },
+                        )
+                        if (linkRefund) {
+                            Spacer(Modifier.height(6.dp))
+                            LinkedExpenseField(
+                                expense = linkedExpense,
+                                onClick = { linkSheetOpen = true },
+                            )
+                        }
+                    }
                 }
             }
 
@@ -331,14 +416,178 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 text = "记一笔",
                 onClick = ::save,
                 modifier = Modifier.padding(horizontal = 22.dp),
-                enabled = valid,
+                enabled = valid && !saving,
                 leading = EcoIcons.Check,
                 height = 46.dp,
             )
             Spacer(Modifier.height(10.dp))
         }
     }
+
+    // 关联原支出：列出近 60 天未退款的支出，选中即绑定（落库在「记一笔」时完成）
+    if (linkSheetOpen) {
+        val current = linkedExpense
+        EcoSheet(
+            onDismiss = { linkSheetOpen = false },
+            title = "关联退款账单",
+            subtitle = "选择这笔退款对应的支出，退款与支出按差额统计",
+        ) {
+            Column {
+                when {
+                    linkLoading -> {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 36.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text("加载中…", style = EcoType.PageLead, color = MaterialTheme.eco.quiet)
+                        }
+                    }
+                    linkCandidates.isEmpty() -> {
+                        EcoEmpty(
+                            title = "暂无可关联的支出",
+                            body = "近 60 天没有未退款的支出记录。",
+                            icon = EcoIcons.Receipt,
+                        )
+                    }
+                    else -> {
+                        EcoPane(Modifier.fillMaxWidth()) {
+                            Column {
+                                linkCandidates.forEachIndexed { index, row ->
+                                    LinkedExpenseRow(
+                                        row = row,
+                                        selected = current?.id == row.id,
+                                        onClick = {
+                                            linkedExpense = row
+                                            linkSheetOpen = false
+                                        },
+                                    )
+                                    if (index != linkCandidates.lastIndex) EcoRowDivider(inset = 14.dp)
+                                }
+                            }
+                        }
+                    }
+                }
+                EcoPageNote("仅显示近 60 天、未退款的支出；退款小于支出时只计差额，退款大于支出时超出部分计入收入。")
+            }
+        }
+    }
 }
+
+/** 关联账单选择行：未选时提示「选择被退款的原支出」，已选时显示商户 / 日期 / 金额 */
+@Composable
+private fun LinkedExpenseField(
+    expense: TransactionRow?,
+    onClick: () -> Unit,
+) {
+    val c = MaterialTheme.eco
+    val shape = RoundedCornerShape(9.dp)
+    Column(Modifier.fillMaxWidth()) {
+        TxFieldLabel("关联账单")
+        Spacer(Modifier.height(6.dp))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(34.dp)
+                .clip(shape)
+                .background(c.surface2)
+                .border(1.dp, c.rule, shape)
+                .clickable(onClick = onClick)
+                .padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = expense?.let {
+                    val merchant = it.counterparty.ifBlank { it.categoryName }
+                    "$merchant · ${linkedExpenseDate(it.timestamp)} · ${Money.formatYuan(it.amountCents)}"
+                } ?: "选择被退款的原支出",
+                style = EcoType.Input,
+                color = if (expense == null) c.quiet else c.ink,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(6.dp))
+            Icon(
+                EcoIcons.ChevDown,
+                contentDescription = "选择关联账单",
+                tint = c.muted,
+                modifier = Modifier.size(14.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun LinkedExpenseRow(
+    row: TransactionRow,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val c = MaterialTheme.eco
+    val merchant = row.counterparty.ifBlank { row.note }.ifBlank { "未命名支出" }
+    val detail = listOf(row.categoryName, row.accountName, linkedExpenseDate(row.timestamp))
+        .filter { it.isNotBlank() }
+        .joinToString(" ")
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .ecoPressable(scaleTo = 0.99f, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        EcoCategoryTile(
+            categoryName = row.categoryName,
+            icon = row.categoryIcon,
+            size = 34.dp,
+            radius = 10.dp,
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "-" + Money.formatYuan(row.amountCents),
+                    style = EcoType.BillAmount,
+                    color = c.ink,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    merchant,
+                    style = EcoType.RowTitle,
+                    color = c.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+            }
+            if (detail.isNotBlank()) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    detail,
+                    style = EcoType.RowSub,
+                    color = c.muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        if (selected) {
+            Icon(EcoIcons.Check, contentDescription = "已选择", tint = c.blue, modifier = Modifier.size(16.dp))
+        } else {
+            Icon(EcoIcons.Chev, contentDescription = null, tint = c.quiet, modifier = Modifier.size(14.dp))
+        }
+    }
+}
+
+private val linkedExpenseDateFormatter: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("M月d日 HH:mm").withZone(ZoneId.systemDefault())
+
+private fun linkedExpenseDate(millis: Long): String =
+    linkedExpenseDateFormatter.format(Instant.ofEpochMilli(millis))
 
 /** 金额主体：AMOUNT / 金额 + ¥ + 自适应大数字 + 闪烁光标（背后一层极淡的玉色光斑） */
 @Composable

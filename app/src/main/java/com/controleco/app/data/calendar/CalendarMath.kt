@@ -1,8 +1,7 @@
 package com.controleco.app.data.calendar
 
-import com.controleco.app.data.db.RefundMark
 import com.controleco.app.data.db.TransactionRow
-import com.controleco.app.data.db.TxType
+import com.controleco.app.data.deposit.DepositMath
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -19,8 +18,10 @@ data class DayMoney(
 /**
  * 日历口径（纯函数，可单测）。
  *
- * - 收入 = 全部收入（含退款到账）；
- * - 支出 = 未被标记「已退款」的支出（与首页/统计一致）。
+ * 与首页 / 统计 / 存款共用同一套统计口径（[DepositMath]）：
+ * - 收入 = 计入统计的收入（含退款到账）；已关联原支出的退款只计超出部分；
+ * - 支出 = 计入统计且未被标记「已退款」的支出，并扣除已关联退款；
+ * - 不计入账单和收支统计的记录对日历收支没有任何影响。
  */
 object CalendarMath {
 
@@ -29,11 +30,10 @@ object CalendarMath {
         rows.forEach { row ->
             val date = Instant.ofEpochMilli(row.timestamp).atZone(zone).toLocalDate()
             val old = map[date] ?: DayMoney()
-            map[date] = when {
-                row.type == TxType.INCOME -> old.copy(incomeCents = old.incomeCents + row.amountCents)
-                row.refundMark == RefundMark.REFUNDED_EXPENSE -> old
-                else -> old.copy(expenseCents = old.expenseCents + row.amountCents)
-            }
+            map[date] = DayMoney(
+                incomeCents = old.incomeCents + DepositMath.incomeCentsOf(row),
+                expenseCents = old.expenseCents + DepositMath.expenseCentsOf(row),
+            )
         }
         return map
     }
@@ -43,11 +43,8 @@ object CalendarMath {
         var income = 0L
         var expense = 0L
         rows.forEach { row ->
-            when {
-                row.type == TxType.INCOME -> income += row.amountCents
-                row.refundMark == RefundMark.REFUNDED_EXPENSE -> Unit
-                else -> expense += row.amountCents
-            }
+            income += DepositMath.incomeCentsOf(row)
+            expense += DepositMath.expenseCentsOf(row)
         }
         return DayMoney(income, expense)
     }

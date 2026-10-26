@@ -719,6 +719,72 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 手动记一笔「退款」并关联原支出：生成一条退款收入（REFUND_INCOME，
+     * `refundLinkId` 指向原支出），关联后支出与退款按差额统计。
+     *
+     * 与 [registerRefund] 的区别：那条路径会把原支出标「已退款」（全额退款），
+     * 这条路径保留原支出、只按差额抵扣，支持部分退款与多笔退款；也不写 `refundPending`，
+     * 不会出现在「待确认账单」里。
+     */
+    fun saveLinkedRefundIncome(
+        amountCents: Long,
+        categoryId: Long,
+        accountId: Long,
+        timestamp: Long,
+        note: String,
+        counterparty: String,
+        expenseId: Long,
+        excludeFromAssets: Boolean = false,
+        countInStats: Boolean = true,
+        onDone: (String?) -> Unit,
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (amountCents <= 0L) {
+                    withContext(Dispatchers.Main) { onDone("请输入有效金额") }
+                    return@launch
+                }
+                val expense = txDao.getById(expenseId)
+                val message = when {
+                    expense == null -> "关联的支出记录不存在"
+                    expense.type != TxType.EXPENSE -> "只能关联支出账单"
+                    expense.refundMark == RefundMark.REFUNDED_EXPENSE -> "该支出已标记退款，不能重复关联"
+                    else -> null
+                }
+                if (message != null) {
+                    withContext(Dispatchers.Main) { onDone(message) }
+                    return@launch
+                }
+                txDao.insert(
+                    TransactionEntity(
+                        type = TxType.INCOME,
+                        amountCents = amountCents,
+                        categoryId = categoryId,
+                        accountId = accountId,
+                        timestamp = timestamp,
+                        note = note,
+                        counterparty = counterparty,
+                        source = TxSource.MANUAL,
+                        refundMark = RefundMark.REFUND_INCOME,
+                        refundPending = false,
+                        excludeFromAssets = excludeFromAssets,
+                        countInStats = countInStats,
+                        refundLinkId = expenseId,
+                    ),
+                )
+                AppLog.i(
+                    "refund",
+                    "manual refund income linked to expense #$expenseId amount=${Money.formatYuan(amountCents)}",
+                )
+                withContext(Dispatchers.Main) { onDone(null) }
+            } catch (e: Exception) {
+                AppLog.e("refund", "save linked refund income failed", e)
+                withContext(Dispatchers.Main) { onDone("保存失败：${e.message ?: "未知错误"}") }
+            }
+        }
+    }
+
     fun deleteTransaction(id: Long, onResult: (String?) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
