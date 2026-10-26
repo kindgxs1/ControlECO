@@ -71,10 +71,63 @@ internal fun hasRecentSameEntry(
      * 会被当成新的一笔自动入账（重复记账）。传 null 时行为与只比捕获时刻一致。
      */
     txTime: Long? = null,
-): Boolean = candidates.any {
-    it.sourcePackage == sourcePackage && it.type == type && it.amountCents == amountCents &&
-        (abs(now - it.createdAt) <= windowMs ||
-            (txTime != null && txTime > 0 && abs(txTime - it.timestamp) <= windowMs))
+    /**
+     * 本条候选的身份（页面流程 `p:` / 通知实例 `n:` / 银行事件 `b:`）。
+     * 同额同来源但**同类身份明确不同**（另一条通知、另一次支付流程、另一条银行短信）时，
+     * 这是第二笔真实交易，不参与重复预检——否则 60 秒内的两笔同额消费永远只能落成待确认，
+     * 表现为"自动入账有时不触发"（见 docs/自动记账捕获机制.md §3.3）。
+     */
+    flowIdentity: String? = null,
+    notificationInstanceId: String? = null,
+    bankInstanceId: String? = null,
+): Boolean = candidates.any { candidate ->
+    candidate.sourcePackage == sourcePackage && candidate.type == type &&
+        candidate.amountCents == amountCents &&
+        (abs(now - candidate.createdAt) <= windowMs ||
+            (txTime != null && txTime > 0 && abs(txTime - candidate.timestamp) <= windowMs)) &&
+        !isDistinctInstance(
+            candidate,
+            flowIdentity = flowIdentity,
+            notificationInstanceId = notificationInstanceId,
+            bankInstanceId = bankInstanceId,
+        )
+}
+
+/** 身份种类：`n:` 通知实例、`b:` 银行事件、其余视为页面流程 */
+private fun identityKind(value: String): Int = when {
+    value.startsWith(NOTIFICATION_ID_PREFIX) -> 1
+    value.startsWith(BANK_ID_PREFIX) -> 2
+    else -> 3
+}
+
+/**
+ * 既有条目与本条候选是否**同类身份但不同实例**（= 另一笔）。
+ *
+ * 只有"两边都有、且属于同一类"的身份才能否定重复：跨通道（页面 ⇄ 通知/银行）时
+ * 对侧身份为空，仍按重复预检处理——避免两条通道的同一次支付被并发入账两次。
+ */
+private fun isDistinctInstance(
+    existing: PendingTransactionEntity,
+    flowIdentity: String?,
+    notificationInstanceId: String?,
+    bankInstanceId: String?,
+): Boolean {
+    val incoming = listOfNotNull(
+        flowIdentity?.takeIf { it.isNotBlank() },
+        notificationInstanceId?.takeIf { it.isNotBlank() },
+        bankInstanceId?.takeIf { it.isNotBlank() },
+    )
+    if (incoming.isEmpty()) return false
+    val existingIds = listOf(
+        entryFlowId(existing),
+        entryNotificationInstanceId(existing),
+        entryBankInstanceId(existing),
+    ).filter { it.isNotBlank() }.distinct()
+    if (existingIds.isEmpty()) return false
+    return incoming.any { id ->
+        val kind = identityKind(id)
+        existingIds.any { it != id && identityKind(it) == kind }
+    }
 }
 
 /**

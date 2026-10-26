@@ -19,6 +19,29 @@ internal const val OVERLAY_AUTO_DISMISS_MS = 60_000L
 /** 确认后的「已记入 · 撤销」细条停留时长 */
 internal const val SAVED_STRIP_DISMISS_MS = 6_000L
 
+/**
+ * 前台包名的有效期：无障碍服务只在窗口切换（`TYPE_WINDOW_STATE_CHANGED`）时上报包名。
+ * 用户长时间停留在一个页面（支付结果页、订单详情页）时，这个值会越来越旧；
+ * 超过有效期就按"判不出前台"处理（放行），否则一次未送达的窗口事件会让之后的
+ * 悬浮卡一直被"当时前台是 X，与捕获来源 Y 不符"挡掉——这是"弹窗入账偶发不出现"的常见成因。
+ */
+internal const val FOREGROUND_STALE_MS = 30_000L
+
+/**
+ * 有效的前台包名（纯函数）：未上报（`null`）或已超过 [ttlMs] 视为判不出 → 返回 `null`
+ * （调用方 [shouldShowOverlay] 对 `null` 一律放行）。
+ */
+internal fun effectiveForegroundPackage(
+    packageName: String?,
+    seenAtElapsed: Long,
+    nowElapsed: Long,
+    ttlMs: Long = FOREGROUND_STALE_MS,
+): String? {
+    if (packageName.isNullOrBlank() || seenAtElapsed <= 0L) return null
+    val age = nowElapsed - seenAtElapsed
+    return if (age in 0..ttlMs) packageName else null
+}
+
 /** 关闭卡片时的卡内当前值（关闭 = 保留这笔账，用户改过的字段同步回去） */
 internal data class DismissSnapshot(
     val amountCents: Long,

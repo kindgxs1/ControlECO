@@ -1,7 +1,9 @@
 package com.controleco.app.capture.overlay
 
 import com.controleco.app.capture.NotificationRules
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -162,6 +164,40 @@ class OverlayDecisionTest {
         assertTrue(isSystemSurface("com.miui.securitycenter"))
         assertFalse(isSystemSurface("com.eg.android.AlipayGphone"))
         assertFalse(isSystemSurface("com.tencent.mm"))
+    }
+
+    // ---------- 前台包名的有效期（无障碍只在窗口切换时上报） ----------
+
+    @Test
+    fun `刚刚上报的前台包名有效`() {
+        assertEquals(
+            NotificationRules.WECHAT,
+            effectiveForegroundPackage(NotificationRules.WECHAT, seenAtElapsed = 1_000L, nowElapsed = 21_000L),
+        )
+    }
+
+    @Test
+    fun `超过有效期或从未上报视为判不出（放行弹卡）`() {
+        assertNull(
+            effectiveForegroundPackage(
+                NotificationRules.WECHAT,
+                seenAtElapsed = 1_000L,
+                nowElapsed = 1_000L + FOREGROUND_STALE_MS + 1,
+            ),
+        )
+        assertNull(effectiveForegroundPackage(null, seenAtElapsed = 0L, nowElapsed = 1_000L))
+        assertNull(effectiveForegroundPackage(NotificationRules.WECHAT, seenAtElapsed = 0L, nowElapsed = 1_000L))
+    }
+
+    @Test
+    fun `过期前台包名不再挡住悬浮卡（按判不出放行）`() {
+        // 无障碍的窗口事件丢失后前台包名会一直停在某个无关应用上：
+        // 若不做有效期判定，之后的卡片会全部被"前台不符"拒绝
+        val stale = effectiveForegroundPackage(
+            "com.xingin.xhs", seenAtElapsed = 0L, nowElapsed = FOREGROUND_STALE_MS + 1,
+        )
+        assertNull(stale)
+        assertTrue(shouldShowOverlay(conditions(foregroundPackage = stale, sourcePackage = NotificationRules.ALIPAY)))
     }
 }
 

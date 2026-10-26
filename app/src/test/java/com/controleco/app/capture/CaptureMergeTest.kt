@@ -813,6 +813,92 @@ class CaptureMergeTest {
         assertFalse(hasRecentSameEntry(existing, NotificationRules.ALIPAY, TxType.EXPENSE, 1290, base + 1_000))
     }
 
+    // ---------- 同额第二笔：身份明确不同 = 另一笔真实交易（不能被 ±60s 预检挡成待确认） ----------
+
+    @Test
+    fun `同额但另一条通知实例是第二笔（照常自动入账）`() {
+        val existing = listOf(
+            pending(amount = 1290, createdAt = base, notificationInstanceId = "n:first"),
+        )
+        assertFalse(
+            hasRecentSameEntry(
+                existing, NotificationRules.WECHAT, TxType.EXPENSE, 1290, base + 3_000,
+                notificationInstanceId = "n:second",
+            ),
+        )
+        // 同一条通知的重复回调仍然命中预检（不重复记账）
+        assertTrue(
+            hasRecentSameEntry(
+                existing, NotificationRules.WECHAT, TxType.EXPENSE, 1290, base + 3_000,
+                notificationInstanceId = "n:first",
+            ),
+        )
+    }
+
+    @Test
+    fun `同额但另一次页面流程是第二笔`() {
+        val existing = listOf(
+            pending(amount = 1290, createdAt = base, flowId = "p:flow-a"),
+        )
+        assertFalse(
+            hasRecentSameEntry(
+                existing, NotificationRules.WECHAT, TxType.EXPENSE, 1290, base + 5_000,
+                flowIdentity = "p:flow-b",
+            ),
+        )
+        assertTrue(
+            hasRecentSameEntry(
+                existing, NotificationRules.WECHAT, TxType.EXPENSE, 1290, base + 5_000,
+                flowIdentity = "p:flow-a",
+            ),
+        )
+    }
+
+    @Test
+    fun `同额的另一条银行事件是第二笔`() {
+        // 银行通道把事件身份写在 notificationInstanceId 列，但前缀是 b:，按事件身份比较
+        val existing = listOf(
+            pending(
+                packageName = "SMS:工商银行", amount = 1290, createdAt = base,
+                notificationInstanceId = "b:event-1",
+            ),
+        )
+        assertFalse(
+            hasRecentSameEntry(
+                existing, "SMS:工商银行", TxType.EXPENSE, 1290, base + 2_000,
+                notificationInstanceId = "b:event-2",
+            ),
+        )
+        assertTrue(
+            hasRecentSameEntry(
+                existing, "SMS:工商银行", TxType.EXPENSE, 1290, base + 2_000,
+                notificationInstanceId = "b:event-1",
+            ),
+        )
+    }
+
+    @Test
+    fun `跨通道的同额仍按重复预检处理（避免同一次支付被并发入账两次）`() {
+        // 既有条目来自通知实例，本条是页面流程：身份类别不同，不构成"另一笔"的证据
+        val existing = listOf(
+            pending(amount = 1290, createdAt = base, notificationInstanceId = "n:abc"),
+        )
+        assertTrue(
+            hasRecentSameEntry(
+                existing, NotificationRules.WECHAT, TxType.EXPENSE, 1290, base + 1_000,
+                flowIdentity = "p:flow-x",
+            ),
+        )
+        // 历史条目没有身份列时同样保守处理
+        assertTrue(
+            hasRecentSameEntry(
+                listOf(pending(amount = 1290, createdAt = base)),
+                NotificationRules.WECHAT, TxType.EXPENSE, 1290, base + 1_000,
+                notificationInstanceId = "n:abc",
+            ),
+        )
+    }
+
     // ---------- 页面 ⇄ 银行同一笔时的备注合并 ----------
 
     @Test

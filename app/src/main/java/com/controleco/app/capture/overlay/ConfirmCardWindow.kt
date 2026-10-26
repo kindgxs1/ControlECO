@@ -129,8 +129,10 @@ internal object ConfirmCardWindow {
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
 
+        var added = false
         return try {
             wm.addView(view, params)
+            added = true
             host.attach()
             confirmView = view
             confirmHost = host
@@ -140,8 +142,11 @@ internal object ConfirmCardWindow {
             AppLog.i(TAG, "confirm card shown pending=#${pending.id} ${pending.ruleName}")
             true
         } catch (e: Exception) {
-            // 无悬浮窗权限 / 被支付保护层拦截：调用方回落通知（Toast 可见而卡片不可见 = 被拦截的铁证）
+            // 无悬浮窗权限 / 被支付保护层拦截：调用方回落通知（Toast 可见而卡片不可见 = 被拦截的铁证）。
+            // 注意 addView 成功但后续步骤抛异常时必须把窗口移除，否则会留下一个看不见的全屏
+            // 透明窗口一直吃掉触摸事件（表现为"应用卡死/点不动"）。
             AppLog.w(TAG, "confirm card addView failed, fallback to notification", e)
+            if (added) runCatching { wm.removeViewImmediate(view) }
             runCatching { host.destroy() }
             false
         }
@@ -275,8 +280,8 @@ internal object ConfirmCardWindow {
         val view = confirmView ?: return
         confirmView = null
         showingPendingId = -1L
-        val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        runCatching { wm.removeViewImmediate(view) }.onFailure { AppLog.w(TAG, "remove confirm view failed", it) }
+        runCatching { windowManagerOrNull()?.removeViewImmediate(view) }
+            .onFailure { AppLog.w(TAG, "remove confirm view failed", it) }
         runCatching { confirmHost?.destroy() }
         confirmHost = null
     }
@@ -286,11 +291,19 @@ internal object ConfirmCardWindow {
         savedDismiss = null
         val view = savedView ?: return
         savedView = null
-        val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        runCatching { wm.removeViewImmediate(view) }.onFailure { AppLog.w(TAG, "remove saved view failed", it) }
+        runCatching { windowManagerOrNull()?.removeViewImmediate(view) }
+            .onFailure { AppLog.w(TAG, "remove saved view failed", it) }
         runCatching { savedHost?.destroy() }
         savedHost = null
     }
+
+    /** appContext 未初始化（进程刚拉起、CaptureCenter.init 之前）时返回 null，避免 lateinit 崩溃 */
+    private fun windowManagerOrNull(): WindowManager? =
+        if (this::appContext.isInitialized) {
+            appContext.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+        } else {
+            null
+        }
 
     private fun dp(value: Int): Int =
         (value * appContext.resources.displayMetrics.density).toInt()

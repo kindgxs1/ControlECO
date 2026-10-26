@@ -13,6 +13,7 @@ import com.controleco.app.capture.overlay.canSyncOverlayEdits
 import com.controleco.app.capture.overlay.ConfirmCardWindow
 import com.controleco.app.capture.overlay.DismissOutcome
 import com.controleco.app.capture.overlay.dismissOutcome
+import com.controleco.app.capture.overlay.effectiveForegroundPackage
 import com.controleco.app.capture.overlay.OVERLAY_DELAY_MS
 import com.controleco.app.capture.overlay.OverlayConditions
 import com.controleco.app.capture.overlay.shouldShowOverlay
@@ -125,7 +126,17 @@ object CaptureCenter {
     /** 溯源记录保留条数：只按条数封顶、不按时间清理（开发者证据），可手动清空 */
     private const val TRACE_KEEP_ROWS = 1_000
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /**
+     * 采集协程的兜底异常处理：任何未被业务 try/catch 覆盖的异常只记日志，**不冒泡到进程**。
+     * 没有它时，`scope.launch` 里的未捕获异常会走线程默认异常处理器，直接闪退。
+     */
+    private val scope = CoroutineScope(
+        SupervisorJob() +
+            Dispatchers.IO +
+            kotlinx.coroutines.CoroutineExceptionHandler { _, e ->
+                AppLog.e("Capture", "capture coroutine failed", e)
+            },
+    )
     private val mainHandler = Handler(Looper.getMainLooper())
     private val recentKeys = LinkedHashMap<String, Long>()
 
@@ -169,6 +180,10 @@ object CaptureCenter {
     /** 无障碍服务跟踪到的当前前台应用包名（未开无障碍时为 null）：悬浮卡的前台匹配用 */
     @Volatile
     private var foregroundPackage: String? = null
+
+    /** 上一次收到窗口切换事件的时间（elapsedRealtime）：用于把过期的前台包名视为"判不出" */
+    @Volatile
+    private var foregroundSeenAt = 0L
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -235,8 +250,14 @@ object CaptureCenter {
         route: String,
         notifId: Int = title.hashCode(),
         action: androidx.core.app.NotificationCompat.Action? = null,
+        /**
+         * 悬浮窗入账开着但卡片没能弹出来时的兜底提醒：不受「入账提醒」开关约束。
+         * 设计上通知是兜底通道（见 docs/自动记账捕获机制.md 第二节）——否则用户只会看到
+         * "弹窗入账没触发"，而不知道这笔已经记好或留在待确认里。
+         */
+        forceNotify: Boolean = false,
     ) {
-        if (!isCaptureNotifyEnabled()) return
+        if (!forceNotify && !isCaptureNotifyEnabled()) return
         if (!canPostNotifications()) {
             AppLog.i("Ntf", "notify skipped (POST_NOTIFICATIONS not granted)")
             return
@@ -310,7 +331,14 @@ object CaptureCenter {
                 return
             }
         }
-        postPendingNotification(type, isRefund, amountCents, sourceLabel, counterparty, dedupKey)
+        // 悬浮窗入账开着却没能弹卡（权限/系统拦截/前台不符/条目已处理）：兜底通知仍然发出，
+        // 否则三开关里「入账提醒」关着时用户完全无感知，误以为捕获没触发。
+        // 带上 pendingId：通知栏可直接「忽略」这条待确认（与卡片里的「忽略」同义）
+        postPendingNotification(
+            type, isRefund, amountCents, sourceLabel, counterparty, dedupKey,
+            pendingId = pendingId,
+            forceNotify = isOverlayConfirmEnabled(),
+        )
     }
 
     /**
@@ -333,7 +361,11 @@ object CaptureCenter {
         ) {
             return
         }
-        postEntryNotification(entered.txId, type, isRefund, amountCents, counterparty, sourceLabel, dedupKey)
+        // 悬浮窗入账开着却没能弹卡：账已经记好，但必须让用户看得到（不受「入账提醒」开关约束）
+        postEntryNotification(
+            entered.txId, type, isRefund, amountCents, counterparty, sourceLabel, dedupKey,
+            forceNotify = isOverlayConfirmEnabled(),
+        )
     }
 
     /** 横幅通知（卡片不可用/收起后的兜底提醒；「已自动入账」等其它提醒另走 postCaptureNotification） */
@@ -345,6 +377,7 @@ object CaptureCenter {
         counterparty: String,
         dedupKey: String,
         pendingId: Long = -1L,
+        forceNotify: Boolean = false,
     ) {
         val kind = when {
             isRefund -> "退款"
@@ -362,6 +395,7 @@ object CaptureCenter {
             ROUTE_PENDING,
             pendingNotifId(dedupKey),
             action = pendingId.takeIf { it > 0 }?.let { ignoreAction(IgnoreTarget(it, dedupKey)) },
+            forceNotify = forceNotify,
         )
     }
 
@@ -377,6 +411,7 @@ object CaptureCenter {
         counterparty: String,
         sourceLabel: String,
         dedupKey: String,
+        forceNotify: Boolean = false,
     ) {
         if (txId <= 0) return
         val kind = when {
@@ -391,6 +426,7 @@ object CaptureCenter {
             "$ROUTE_EDIT_PREFIX$txId",
             entryNotifId(dedupKey),
             action = undoEntryAction(txId, dedupKey),
+            forceNotify = forceNotify,
         )
     }
 
@@ -706,6 +742,7 @@ object CaptureCenter {
     /** 无障碍服务上报前台应用（悬浮卡只在"人还在支付页"时弹） */
     fun noteForegroundPackage(packageName: String) {
         foregroundPackage = packageName
+        foregroundSeenAt = SystemClock.elapsedRealtime()
     }
 
     /**
@@ -721,7 +758,10 @@ object CaptureCenter {
     ): Boolean {
         val pm = appContext.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
         val km = appContext.getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager
-        val fg = foregroundPackage
+        // 过期的前台包名（无障碍很久没上报）按"判不出"处理：否则会一直误判"前台不符"而不弹卡
+        val fg = effectiveForegroundPackage(
+            foregroundPackage, foregroundSeenAt, SystemClock.elapsedRealtime(),
+        )
         // 红包确认卡是"用户必须做选择"的提示，不受「悬浮窗入账」开关约束；
         // 仍然要求悬浮窗权限、屏幕点亮、非锁屏、非本应用前台（这些是系统硬条件）。
         val enabled = forcePrompt || isOverlayConfirmEnabled()
@@ -2939,10 +2979,14 @@ object CaptureCenter {
             return null
         }
         // 重复预检（±60s 同数据库校验）：同来源+同方向+同金额在窗口内已有条目（待确认或已入账）
-        // → 不静默入账，回落"入队 + 提醒"（重复通知/分钟边界重发不会造成双记账，可疑的第二笔仍让用户看到）
+        // → 不静默入账，回落"入队 + 提醒"（重复通知/分钟边界重发不会造成双记账，可疑的第二笔仍让用户看到）。
+        // 但同额同来源却**身份明确不同**（另一条通知实例/另一次页面流程/另一条银行短信）时是第二笔真实交易，
+        // 必须照常入账——否则 60 秒内的两笔同额消费永远只能落待确认，表现为"自动入账有时不触发"。
         if (hasRecentSameEntry(
                 pendingDao.getMergeable(), sourcePackage, type, amountCents, System.currentTimeMillis(),
                 txTime = timestamp,
+                flowIdentity = flowId.takeIf { it.isNotBlank() },
+                notificationInstanceId = notificationInstanceId.takeIf { it.isNotBlank() },
             )
         ) {
             AppLog.i("Ntf", "direct entry skipped (recent same entry) $sourcePackage $type ${Money.formatYuan(amountCents)}")

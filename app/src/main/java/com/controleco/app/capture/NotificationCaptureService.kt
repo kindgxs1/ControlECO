@@ -32,6 +32,10 @@ class NotificationCaptureService : NotificationListenerService() {
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
         CaptureCenter.markConnected(false)
+        // 每次新的断开都重新走一轮分级重连：旧实现只在服务生命周期内累计 3 次，
+        // 之后任何一次断开都不再 requestRebind（监听假死后再也拉不回来，表现为"有时候完全不触发"）
+        rebindAttempt = 0
+        rebindHandler.removeCallbacksAndMessages(null)
         AppLog.w("Ntf", "listener disconnected, requesting rebind (attempt=${rebindAttempt + 1})")
         scheduleStaggeredRebind()
     }
