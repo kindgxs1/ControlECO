@@ -37,6 +37,7 @@ import com.controleco.app.data.db.TypeTotalRow
 import com.controleco.app.data.db.TxSource
 import com.controleco.app.data.db.TxType
 import com.controleco.app.data.imports.BillDeduper
+import com.controleco.app.data.imports.ImportAccountPlanner
 import com.controleco.app.data.backup.BackupCsv
 import com.controleco.app.data.backup.BackupStore
 import com.controleco.app.data.budget.Budget
@@ -60,6 +61,7 @@ import com.controleco.app.data.plan.PlanScheduler
 import com.controleco.app.data.plan.RecurringEndMode
 import com.controleco.app.data.plan.RecurringFrequency
 import com.controleco.app.data.plan.RecurringMath
+import com.controleco.app.data.model.ImportAccountPlan
 import com.controleco.app.data.model.ImportCommitResult
 import com.controleco.app.data.model.ParsedBill
 import com.controleco.app.update.AppUpdate
@@ -1296,11 +1298,16 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     private val _importDuplicateCount = MutableStateFlow<Int?>(null)
     val importDuplicateCount: StateFlow<Int?> = _importDuplicateCount
 
+    /** 按「收/付款方式」自动匹配到的账户；未匹配的交给预览页人工确认 */
+    private val _importAccountPlan = MutableStateFlow<ImportAccountPlan?>(null)
+    val importAccountPlan: StateFlow<ImportAccountPlan?> = _importAccountPlan
+
     fun parseBillFile(uriString: String) {
         _parsedBill.value = null
         _importError.value = null
         _importDone.value = null
         _importDuplicateCount.value = null
+        _importAccountPlan.value = null
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val context = getApplication<AccBookApp>()
@@ -1310,7 +1317,11 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                     ?: throw IllegalArgumentException("无法识别账单格式，请选择微信/支付宝导出的账单 CSV")
                 // 预览前先与账本已有记录比对，页面能直接显示实际会写入的条数
                 val existing = existingForImport(bill)
-                _importDuplicateCount.value = BillDeduper.partition(bill.rows, existing).duplicateCount
+                val partition = BillDeduper.partition(bill.rows, existing)
+                _importDuplicateCount.value = partition.duplicateCount
+                // 账户自动匹配只针对真正会写入的行：重复行不会再落库，不必让用户确认
+                _importAccountPlan.value =
+                    ImportAccountPlanner.plan(bill.source, partition.newRows, accountDao.getAll())
                 _parsedBill.value = bill
             } catch (e: Exception) {
                 AppLog.e("import", "parse failed", e)
@@ -1327,13 +1338,19 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         return txDao.getEntitiesInRange(min - margin, max + margin)
     }
 
-    fun commitImport(bill: ParsedBill, accountId: Long) {
+    /**
+     * 导入落库。[accountByPayMethod] = 「收/付款方式」文本 → 账户 id（自动匹配 + 用户确认）；
+     * 万一某行没有对应项，回落到 [fallbackAccountId]。
+     */
+    fun commitImport(bill: ParsedBill, accountByPayMethod: Map<String, Long>, fallbackAccountId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 // 提交前再比对一次（解析到确认之间账本可能新增记录），只写入真正缺失的
                 val partition = BillDeduper.partition(bill.rows, existingForImport(bill))
                 val cats = categoryDao.getAll()
                 val entities = partition.newRows.map { row ->
+                    // 账户按支付方式逐笔匹配（同一支付方式 → 同一账户）；未确认的用兜底账户
+                    val accountId = accountByPayMethod[row.payMethod.trim()] ?: fallbackAccountId
                     // 退款收入一律归「退款」分类：导入时按商户名猜出的购物/餐饮对退款行没有意义
                     val categoryId = (if (row.refundMark == RefundMark.REFUND_INCOME) {
                         RefundCategory.incomeCategoryId(cats)
@@ -1367,10 +1384,16 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                 val inserted = ids.count { it != -1L }
                 // 已存在而跳过 + 并发写入/同单号冲突，都算重复
                 val duplicated = partition.duplicateCount + ids.count { it == -1L }
-                AppLog.i("import", "committed: inserted=$inserted duplicated=$duplicated")
+                val accountCount = entities
+                    .filterIndexed { index, _ -> ids.getOrNull(index)?.let { it != -1L } == true }
+                    .map { it.accountId }
+                    .distinct()
+                    .size
+                AppLog.i("import", "committed: inserted=$inserted duplicated=$duplicated accounts=$accountCount")
                 withContext(Dispatchers.Main) {
                     _importDuplicateCount.value = null
-                    _importDone.value = ImportCommitResult(inserted, duplicated)
+                    _importAccountPlan.value = null
+                    _importDone.value = ImportCommitResult(inserted, duplicated, accountCount)
                 }
             } catch (e: Exception) {
                 AppLog.e("import", "commit failed", e)
@@ -1384,6 +1407,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         _importError.value = null
         _importDone.value = null
         _importDuplicateCount.value = null
+        _importAccountPlan.value = null
     }
 
     // ---------- 自动记账（阶段二：通知监听通道） ----------

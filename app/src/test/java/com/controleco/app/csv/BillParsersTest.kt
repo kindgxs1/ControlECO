@@ -291,6 +291,41 @@ class BillParsersTest {
         assertEquals("饭钱", r1.note)
     }
 
+    @Test
+    fun `parse alipay 空状态与已完成状态都入账`() {
+        val csv = listOf(
+            "导出信息：",
+            "------------------------支付宝支付科技有限公司  电子客户回单------------------------",
+            "交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,",
+            "2026-10-21 10:00:00,餐饮美食,商户A,/,午餐,支出,12.00,余额宝,,2026102123001160371429961001\t,,\t,",
+            "2026-10-21 11:00:00,餐饮美食,商户B,/,午餐,支出,13.00,余额宝,交易完成,2026102123001160371429961002\t,,\t,",
+            "2026-10-21 12:00:00,人情往来,张三,/,红包,收入,20.00,余额,已收钱,2026102123001160371429961003\t,,\t,",
+            "2026-10-21 13:00:00,餐饮美食,商户C,/,午餐,支出,14.00,余额宝,已关闭,2026102123001160371429961004\t,,\t,",
+        ).joinToString("\n")
+        val bill = BillParsers.parse(csv.toByteArray(Charset.forName("GBK")))!!
+        // 空状态 / 交易完成 / 已收钱 都不能被当成「未完成」跳过
+        assertEquals(4, bill.rows.size)
+        assertEquals(0, bill.skippedStatus)
+        assertEquals(4, bill.dataRowCount)
+        assertEquals(0, bill.skippedTotal)
+        // 已关闭 = 已退款关闭
+        assertEquals(RefundMark.REFUNDED_EXPENSE, bill.rows[3].refundMark)
+        assertEquals(1, bill.refundCount)
+    }
+
+    @Test
+    fun `dataRowCount 统计表头后的明细行_含被跳过的行`() {
+        val wechat = BillParsers.parse(wechatCsv.toByteArray(Charsets.UTF_8))!!
+        assertEquals(4, wechat.dataRowCount)   // 3 条入账 + 1 条「/」跳过
+        assertEquals(1, wechat.skippedTotal)
+        assertEquals(3, wechat.rows.size)
+
+        val alipay = BillParsers.parse(alipayCsv2026.toByteArray(Charset.forName("GBK")))!!
+        assertEquals(5, alipay.dataRowCount)   // 4 条入账 + 1 条「提现」跳过
+        assertEquals(1, alipay.skippedTotal)
+        assertEquals(4, alipay.rows.size)
+    }
+
     // ---------- 其他 ----------
 
     @Test

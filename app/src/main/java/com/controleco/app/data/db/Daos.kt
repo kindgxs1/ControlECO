@@ -451,11 +451,15 @@ interface TransactionDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAllIgnore(txs: List<TransactionEntity>): List<Long>
 
+    /** 备份还原：返回实际写入的 id（顺序与入参一致），用于修复退付款关联 */
     @Insert
-    suspend fun insertAll(txs: List<TransactionEntity>)
+    suspend fun insertAll(txs: List<TransactionEntity>): List<Long>
 
     @Update
     suspend fun update(tx: TransactionEntity)
+
+    @Update
+    suspend fun updateAll(txs: List<TransactionEntity>)
 
     @Query("DELETE FROM transactions WHERE id = :id")
     suspend fun deleteById(id: Long)

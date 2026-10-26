@@ -44,7 +44,8 @@ object BillParsers {
     }
 
     fun detect(rows: List<List<String>>): BillSource? {
-        val head = rows.take(25)
+        // 导出文件的前言长度会随「特别提示」条数变化，扫描范围放宽到 80 行仍能保证不误判
+        val head = rows.take(80)
         fun has(keyword: String) = head.any { row -> row.any { it.contains(keyword) } }
         return when {
             has("微信支付账单明细") || has("交易单号") -> BillSource.WECHAT
@@ -77,6 +78,8 @@ object BillParsers {
         var skipType = 0
         var skipStatus = 0
         var refundCount = 0
+
+        val dataRows = rows.subList(headerIdx + 1, rows.size).count { row -> row.any { it.isNotBlank() } }
 
         for (raw in rows.subList(headerIdx + 1, rows.size)) {
             fun cell(idx: Int) = if (idx in raw.indices) raw[idx].trim() else ""
@@ -128,7 +131,7 @@ object BillParsers {
                 refundMark = mark,
             )
         }
-        return ParsedBill(BillSource.WECHAT, parsed, skipType, skipStatus, refundCount)
+        return ParsedBill(BillSource.WECHAT, parsed, skipType, skipStatus, refundCount, dataRows)
     }
 
     /**
@@ -178,6 +181,8 @@ object BillParsers {
         var skipStatus = 0
         var refundCount = 0
 
+        val dataRows = rows.subList(headerIdx + 1, rows.size).count { row -> row.any { it.isNotBlank() } }
+
         for (raw in rows.subList(headerIdx + 1, rows.size)) {
             fun cell(idx: Int) = if (idx >= 0 && idx in raw.indices) raw[idx].trim() else ""
             if (raw.all { it.isBlank() }) continue
@@ -196,12 +201,21 @@ object BillParsers {
             // 退款标记（真实账单为成对记录）：
             // - 退款到账行：不计收支 + 状态"退款成功" → 标记退款收入
             // - 原支出行：状态"交易关闭"（已退款关闭）→ 标记已退款；部分退款时原行仍"交易成功"，保持普通支出
+            // 已完成的交易状态：支付宝各版本会写「交易成功 / 已到账 / 等待确认收货（担保交易）/
+            // 交易完成 / 已收钱」；状态为空但收/支已明确的行也按已入账处理，避免整份账单被误判为空。
+            val statusCompleted = status.isBlank() ||
+                status.contains("成功") || status.contains("已到账") ||
+                status.contains("等待确认收货") || status.contains("交易完成") ||
+                status.contains("已收钱")
             var mark = RefundMark.NONE
             when {
                 status.contains("退款") && type == TxType.INCOME -> { mark = RefundMark.REFUND_INCOME; refundCount++ }
-                type == TxType.EXPENSE && status == "交易关闭" -> { mark = RefundMark.REFUNDED_EXPENSE; refundCount++ }
+                type == TxType.EXPENSE && (status == "交易关闭" || status == "已关闭") -> {
+                    mark = RefundMark.REFUNDED_EXPENSE; refundCount++
+                }
                 // 担保交易已付款、等待收货也是真实支出，不能当"未完成"跳过
-                !(status.contains("成功") || status.contains("已到账") || status == "等待确认收货") -> {
+                !statusCompleted -> {
+                    AppLog.i("import", "支付宝跳过未完成状态: '${status.ifBlank { "(空)" }}'")
                     skipStatus++
                     continue
                 }
@@ -237,7 +251,11 @@ object BillParsers {
                 refundMark = mark,
             )
         }
-        return ParsedBill(BillSource.ALIPAY, parsed, skipType, skipStatus, refundCount)
+        AppLog.i(
+            "import",
+            "支付宝解析: data=$dataRows rows=${parsed.size} skipType=$skipType skipStatus=$skipStatus refund=$refundCount",
+        )
+        return ParsedBill(BillSource.ALIPAY, parsed, skipType, skipStatus, refundCount, dataRows)
     }
 
     // ---------- 公共 ----------

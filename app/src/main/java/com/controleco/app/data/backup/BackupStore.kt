@@ -41,7 +41,8 @@ internal data class BackupData(
  * - merchant_rules（自动入账的商户归类学习结果）
  * - settings（SharedPreferences 里的全部设置；卡面图片的本地 URI 不导出）
  *
- * 恢复时先清空当前账本再重建，id 原样保留，所以分类/账户的关联不会断。
+ * 恢复时先清空当前账本再重建，id 原样保留，所以分类/账户的关联不会断；
+ * 若账单 id 被重排（CSV 里重复编号会改用自增 id），退付款关联会在同一事务内回写到新 id。
  * CSV / XLS 账单由 [BackupCsv] 负责，本类提供共用的读写与格式识别。
  */
 object BackupStore {
@@ -99,13 +100,55 @@ object BackupStore {
 
             if (data.accounts.isNotEmpty()) accountDao.insertAll(data.accounts)
             if (data.categories.isNotEmpty()) categoryDao.insertAll(data.categories)
-            if (data.transactions.isNotEmpty()) txDao.insertAll(data.transactions)
+            val insertedIds = if (data.transactions.isNotEmpty()) {
+                txDao.insertAll(data.transactions)
+            } else {
+                emptyList()
+            }
+            // 退付款关联（refundLinkId）在备份里按旧 id 记录：id 被重排时按「旧 → 新」回写，
+            // 指向已不存在的支出则清零，避免还原后留下悬空关联。仍在同一事务内完成。
+            val relinked = remapRefundLinks(data.transactions, insertedIds)
+            if (relinked.isNotEmpty()) txDao.updateAll(relinked)
             data.installments.forEach { planDao.insertInstallmentForRestore(it) }
             data.recurring.forEach { planDao.insertRecurringForRestore(it) }
             // id 原样保留：商户归类里的分类/账户指向不会因为还原而错位
             data.merchantRules.forEach { merchantRuleDao.upsert(it) }
         }
         return data.transactions.size
+    }
+
+    /**
+     * 还原后修复退付款关联（纯函数，便于单测）。
+     *
+     * 备份里的 [TransactionEntity.refundLinkId] 记的是备份内的旧账单 id；
+     * 数据库自动分配新 id（备份中的「编号」为 0 或冲突）时，关联要跟着改到新 id。
+     * 返回需要更新的行（只含真正发生变化的部分），由调用方批量写回。
+     */
+    internal fun remapRefundLinks(
+        transactions: List<TransactionEntity>,
+        insertedIds: List<Long>,
+    ): List<TransactionEntity> {
+        if (transactions.isEmpty() || insertedIds.size != transactions.size) return emptyList()
+        val oldToNew = HashMap<Long, Long>(transactions.size)
+        transactions.forEachIndexed { index, t -> if (t.id > 0L) oldToNew[t.id] = insertedIds[index] }
+        // 关联只允许指向支出；指向备份里不存在的支出时清空，避免悬空关联
+        val expenseIds = transactions.asSequence()
+            .filter { it.type == TxType.EXPENSE && it.id > 0L }
+            .map { it.id }
+            .toHashSet()
+        val out = mutableListOf<TransactionEntity>()
+        transactions.forEachIndexed { index, t ->
+            if (t.refundLinkId <= 0L) return@forEachIndexed
+            val newLink = if (expenseIds.contains(t.refundLinkId)) {
+                oldToNew[t.refundLinkId] ?: t.refundLinkId
+            } else {
+                0L
+            }
+            if (newLink != t.refundLinkId) {
+                out += t.copy(id = insertedIds[index], refundLinkId = newLink)
+            }
+        }
+        return out
     }
 
     suspend fun exportJson(context: Context, db: AccBookDatabase, prefs: SharedPreferences): String {

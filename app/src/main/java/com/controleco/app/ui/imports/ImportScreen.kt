@@ -66,6 +66,8 @@ import com.controleco.app.data.db.AccountEntity
 import com.controleco.app.data.db.RefundCategory
 import com.controleco.app.data.db.RefundMark
 import com.controleco.app.data.db.TxType
+import com.controleco.app.data.model.ImportAccountGroup
+import com.controleco.app.data.model.ImportAccountPlan
 import com.controleco.app.data.model.ImportCommitResult
 import com.controleco.app.data.model.ImportedBillRow
 import com.controleco.app.data.model.ParsedBill
@@ -96,14 +98,10 @@ fun ImportScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     val error by vm.importError.collectAsStateWithLifecycle()
     val done by vm.importDone.collectAsStateWithLifecycle()
     val duplicateCount by vm.importDuplicateCount.collectAsStateWithLifecycle()
+    val accountPlan by vm.importAccountPlan.collectAsStateWithLifecycle()
     val accounts by vm.accounts.collectAsStateWithLifecycle()
 
-    var accountId by remember { mutableStateOf<Long?>(null) }
     var parsing by remember { mutableStateOf(false) }
-
-    LaunchedEffect(accounts) {
-        if (accountId == null && accounts.isNotEmpty()) accountId = accounts.first().id
-    }
 
     // 解析结束（成功或失败）后收起进度态；进度态本身只覆盖"文件已选、结果未到"这段
     LaunchedEffect(bill, error) {
@@ -146,18 +144,18 @@ fun ImportScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             when {
                 d != null -> ImportDoneStage(
                     result = d,
-                    accountName = accounts.firstOrNull { it.id == accountId }?.name,
                     onContinue = reset,
                     onBack = onBack,
                 )
                 b != null -> ImportPreviewStage(
                     bill = b,
                     accounts = accounts,
-                    accountId = accountId,
+                    plan = accountPlan,
                     duplicateCount = duplicateCount,
                     error = error,
-                    onSelectAccount = { accountId = it },
-                    onCommit = { accountId?.let { vm.commitImport(b, it) } },
+                    onCommit = { assignments, fallback ->
+                        vm.commitImport(b, assignments, fallback)
+                    },
                     onReset = reset,
                 )
                 parsing && error == null -> ImportParsingStage()
@@ -380,11 +378,10 @@ private fun ImportParsingStage() {
 private fun ImportPreviewStage(
     bill: ParsedBill,
     accounts: List<AccountEntity>,
-    accountId: Long?,
+    plan: ImportAccountPlan?,
     duplicateCount: Int?,
     error: String?,
-    onSelectAccount: (Long) -> Unit,
-    onCommit: () -> Unit,
+    onCommit: (Map<String, Long>, Long) -> Unit,
     onReset: () -> Unit,
 ) {
     val c = MaterialTheme.eco
@@ -392,6 +389,14 @@ private fun ImportPreviewStage(
     val previewRows = bill.rows.take(8)
     val duplicated = (duplicateCount ?: 0).coerceIn(0, bill.rows.size)
     val newCount = bill.rows.size - duplicated
+    val fallbackAccountId = accounts.firstOrNull { it.isDefault }?.id ?: accounts.firstOrNull()?.id
+
+    // 未匹配支付方式的人工确认结果：支付方式文本 → 账户 id。
+    // 换文件后 plan 变化，remember(bill) 会重置，不会把上一次的确认带过来。
+    var manual by remember(bill) { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    val unmatchedGroups = plan?.groups?.filter { !it.matched }.orEmpty()
+    val resolved = accounts.isNotEmpty() && (plan == null || plan.isResolved(manual))
+    val assignments = plan?.assignments(manual).orEmpty()
 
     error?.let {
         Spacer(Modifier.height(10.dp))
@@ -434,46 +439,50 @@ private fun ImportPreviewStage(
                 }
             }
 
-            EcoRowDivider(inset = 14.dp)
-
-            Column(Modifier.padding(14.dp)) {
-                Text("记入账户", style = EcoType.FieldLabel, color = c.muted)
-                Spacer(Modifier.height(7.dp))
-                if (accounts.isEmpty()) {
-                    Text(
-                        "暂无账户，请先在账户管理中添加",
-                        style = EcoType.PageNote,
-                        color = c.amber,
-                    )
-                } else {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        accounts.forEach { acc ->
-                            EcoChip(
-                                text = acc.name,
-                                selected = accountId == acc.id,
-                                onClick = { onSelectAccount(acc.id) },
-                            )
-                        }
-                    }
-                }
+            // 账户匹配：只有确实会写入的记录才需要确认账户
+            if (newCount > 0) {
+                EcoRowDivider(inset = 14.dp)
+                ImportAccountSection(
+                    accounts = accounts,
+                    plan = plan,
+                    unmatchedGroups = unmatchedGroups,
+                    manual = manual,
+                    resolved = resolved,
+                    onAssign = { payMethod, accountId ->
+                        manual = manual + (payMethod to accountId)
+                    },
+                    onAssignAll = { accountId ->
+                        manual = manual + unmatchedGroups.associate { it.payMethod to accountId }
+                    },
+                )
             }
 
-            if (bill.rows.isEmpty()) {
-                EcoRowDivider(inset = 14.dp)
-                EcoEmpty(
-                    title = "没有可导入的记录",
-                    body = "文件里没有可入账的收支记录，换一个文件试试。",
-                    icon = EcoIcons.File,
-                )
-            } else {
-                EcoRowDivider(inset = 14.dp)
-                Column {
-                    previewRows.forEachIndexed { index, row ->
-                        ImportPreviewRow(row = row)
-                        if (index != previewRows.lastIndex) EcoRowDivider(inset = 14.dp)
+            when {
+                bill.rows.isEmpty() -> {
+                    EcoRowDivider(inset = 14.dp)
+                    EcoEmpty(
+                        title = "文件里没有可入账的记录",
+                        body = "已读取 ${bill.dataRowCount} 行明细，其中 ${bill.skippedOtherType} 条是" +
+                            "「不计收支」、${bill.skippedStatus} 条状态未完成。" +
+                            "请确认导出的是「用于个人对账」的明细，或换一个文件试试。",
+                        icon = EcoIcons.File,
+                    )
+                }
+                newCount == 0 -> {
+                    EcoRowDivider(inset = 14.dp)
+                    EcoEmpty(
+                        title = "账本中已有这些记录",
+                        body = "这 ${bill.rows.size} 条记录都能在账本里找到对应条目，本次没有新增，无需重复导入。",
+                        icon = EcoIcons.Check,
+                    )
+                }
+                else -> {
+                    EcoRowDivider(inset = 14.dp)
+                    Column {
+                        previewRows.forEachIndexed { index, row ->
+                            ImportPreviewRow(row = row)
+                            if (index != previewRows.lastIndex) EcoRowDivider(inset = 14.dp)
+                        }
                     }
                 }
             }
@@ -485,9 +494,18 @@ private fun ImportPreviewStage(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 EcoPrimaryButton(
-                    text = if (newCount > 0) "确认导入 $newCount 条" else "账本中已有这些记录",
-                    onClick = onCommit,
-                    enabled = accountId != null && newCount > 0,
+                    text = when {
+                        bill.rows.isEmpty() -> "文件里没有可入账的记录"
+                        newCount == 0 -> "账本中已有这些记录"
+                        accounts.isEmpty() -> "请先添加账户"
+                        !resolved -> "请先确认未匹配账户"
+                        else -> "确认导入 $newCount 条"
+                    },
+                    onClick = {
+                        val fallback = fallbackAccountId
+                        if (fallback != null) onCommit(assignments, fallback)
+                    },
+                    enabled = fallbackAccountId != null && newCount > 0 && resolved,
                 )
                 EcoGhostButton(text = "换一个文件", onClick = onReset)
             }
@@ -495,8 +513,162 @@ private fun ImportPreviewStage(
     }
 
     EcoPageNote(
-        "预览只显示前 8 条；导入会与账本比对（同方向、同金额，且单号相同 / 时间相近 / 同日同商户），只写入缺失记录。",
+        "预览只显示前 8 条；导入会与账本比对（同方向、同金额，且单号相同 / 时间相近 / 同日同商户），只写入缺失记录。" +
+            "账户按账单里的支付方式自动匹配，未匹配的确认后才能导入。",
     )
+}
+
+/**
+ * 账户匹配区：已匹配的按支付方式直接列出「支付方式 → 账户」；
+ * 未匹配的按支付方式分组，可逐个选账户，也可「批量设为」同一账户。
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ImportAccountSection(
+    accounts: List<AccountEntity>,
+    plan: ImportAccountPlan?,
+    unmatchedGroups: List<ImportAccountGroup>,
+    manual: Map<String, Long>,
+    resolved: Boolean,
+    onAssign: (String, Long) -> Unit,
+    onAssignAll: (Long) -> Unit,
+) {
+    val c = MaterialTheme.eco
+    Column(Modifier.padding(14.dp)) {
+        Text("记入账户", style = EcoType.FieldLabel, color = c.muted)
+        Spacer(Modifier.height(4.dp))
+
+        if (accounts.isEmpty()) {
+            Text(
+                "暂无账户，请先在账户管理中添加上面的支付方式对应的账户",
+                style = EcoType.PageNote,
+                color = c.amber,
+            )
+            return@Column
+        }
+
+        val matched = plan?.groups?.filter { it.matched }.orEmpty()
+        if (plan == null) {
+            Text("正在比对账户…", style = EcoType.PageNote, color = c.muted)
+            return@Column
+        }
+
+        Text(
+            "已按账单里的「收/付款方式」自动选择账户；未匹配的请手动确认。",
+            style = EcoType.PageNote,
+            color = c.muted,
+        )
+
+        matched.forEach { g ->
+            Spacer(Modifier.height(7.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    g.label,
+                    style = EcoType.PageNote.copy(fontSize = 10.sp),
+                    color = c.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "${g.rowCount} 条",
+                    style = EcoType.Micro.copy(fontSize = 8.sp),
+                    color = c.quiet,
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "→ ${g.accountName}",
+                    style = EcoType.SegSmall.copy(fontSize = 9.sp),
+                    color = c.jade,
+                    maxLines = 1,
+                )
+            }
+        }
+
+        if (unmatchedGroups.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(c.amberSoft)
+                    .border(1.dp, c.amber.copy(alpha = 0.22f), RoundedCornerShape(14.dp))
+                    .padding(12.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        EcoIcons.Warning,
+                        contentDescription = null,
+                        tint = c.amber,
+                        modifier = Modifier.size(13.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        if (resolved) "未匹配账户已确认" else "待确认账户",
+                        style = EcoType.RowTitle.copy(fontSize = 10.5.sp, fontWeight = FontWeight.Bold),
+                        color = c.amber,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "${unmatchedGroups.size} 种 · ${unmatchedGroups.sumOf { it.rowCount }} 条",
+                        style = EcoType.Micro.copy(fontSize = 8.sp),
+                        color = c.amber,
+                    )
+                }
+
+                unmatchedGroups.forEach { g ->
+                    Spacer(Modifier.height(9.dp))
+                    Text(
+                        "${g.label} · ${g.rowCount} 条",
+                        style = EcoType.PageNote.copy(fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold),
+                        color = c.ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(5.dp))
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        accounts.forEach { acc ->
+                            EcoChip(
+                                text = acc.name,
+                                selected = manual[g.payMethod] == acc.id,
+                                height = 26.dp,
+                                onClick = { onAssign(g.payMethod, acc.id) },
+                            )
+                        }
+                    }
+                }
+
+                if (unmatchedGroups.size > 1) {
+                    Spacer(Modifier.height(11.dp))
+                    EcoRowDivider(inset = 0.dp)
+                    Spacer(Modifier.height(9.dp))
+                    Text(
+                        "批量设为同一个账户",
+                        style = EcoType.PageNote.copy(fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold),
+                        color = c.muted,
+                    )
+                    Spacer(Modifier.height(5.dp))
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        accounts.forEach { acc ->
+                            EcoChip(
+                                text = acc.name,
+                                selected = false,
+                                height = 26.dp,
+                                onClick = { onAssignAll(acc.id) },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -550,7 +722,6 @@ private fun ImportPreviewRow(row: ImportedBillRow) {
 @Composable
 private fun ImportDoneStage(
     result: ImportCommitResult,
-    accountName: String?,
     onContinue: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -587,10 +758,10 @@ private fun ImportDoneStage(
                 color = c.muted,
                 textAlign = TextAlign.Center,
             )
-            if (accountName != null) {
+            if (result.accountCount > 0) {
                 Spacer(Modifier.height(3.dp))
                 Text(
-                    "已记入「$accountName」。",
+                    "已按账单里的「收/付款方式」记入 ${result.accountCount} 个账户。",
                     style = EcoType.PageNote.copy(textAlign = TextAlign.Center),
                     color = c.muted,
                     textAlign = TextAlign.Center,

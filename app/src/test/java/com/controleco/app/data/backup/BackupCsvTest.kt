@@ -99,6 +99,20 @@ class BackupCsvTest {
     }
 
     @Test
+    fun `退款关联列随 CSV 还原`() {
+        // 收入行（id 12）的「退款关联」指向被退款的支出行（id 11）
+        val text = sampleCsv().replace("1750000000000,,1,0", "1750000000000,,1,11")
+        val data = BackupCsv.parseRows(CsvReader.parse(text))!!
+        val income = data.transactions.first { it.id == 12L }
+        assertEquals(11L, income.refundLinkId)
+
+        // 普通行没有关联
+        assertEquals(0L, data.transactions.first { it.id == 13L }.refundLinkId)
+        // 被退款的支出只打标记，不反向指回退款收入
+        assertEquals(0L, data.transactions.first { it.id == 11L }.refundLinkId)
+    }
+
+    @Test
     fun `非备份文件返回空`() {
         assertNull(BackupCsv.parseRows(CsvReader.parse("日期,金额\n2026-10-24,1.00")))
     }
