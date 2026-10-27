@@ -801,7 +801,9 @@ internal fun ConfirmCardContent(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     EcoTextAction(
-                        text = "忽略",
+                        // 已入账时这个动作是"撤销入账"（退回待确认），不是"忽略这笔捕获"——用词必须区分开，
+                        // 否则用户以为只是收起卡片，一笔真实消费就被当成忽略处理了
+                        text = if (alreadyEntered) "撤销" else "忽略",
                         onClick = onIgnore,
                         color = if (askMode) c.clay else c.muted,
                     )
@@ -1050,16 +1052,21 @@ private fun SubCategoryPanel(
     }
 }
 
-/** 「已记入 支出 ¥20.06 · 撤销」细条（非阻塞，底部悬浮，几秒后自动消失） */
+/** 「已记入 支出 ¥20.06 · 撤销」细条（非阻塞，屏幕顶端悬浮，[durationMs] 后自动消失） */
 @Composable
-internal fun SavedStripContent(text: String, onUndo: () -> Unit) {
+internal fun SavedStripContent(
+    text: String,
+    onUndo: () -> Unit,
+    durationMs: Long = SAVED_STRIP_DISMISS_MS,
+) {
     val c = MaterialTheme.eco
     val progress = remember { Animatable(0f) }
-    LaunchedEffect(Unit) {
+    LaunchedEffect(durationMs) {
+        if (durationMs <= 0L) return@LaunchedEffect
         progress.animateTo(
             targetValue = 1f,
             animationSpec = tween(
-                durationMillis = SAVED_STRIP_DISMISS_MS.toInt(),
+                durationMillis = durationMs.toInt(),
                 easing = LinearEasing,
             ),
         )

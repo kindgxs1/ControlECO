@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -381,6 +382,9 @@ private fun TxTimeWheelDialog(
             Column(
                 Modifier
                     .width(316.dp)
+                    // 键盘弹起时整体上移：否则手动输入时间后「确定 / 取消」被输入法挡住，
+                    // 用户会觉得"选完时间没有确定按钮"
+                    .imePadding()
                     .padding(horizontal = 18.dp, vertical = 16.dp),
             ) {
                 Text("选择时间", style = EcoType.PageLead, color = c.ink)

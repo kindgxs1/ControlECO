@@ -372,10 +372,12 @@ object CaptureCenter {
             mainHandler.post {
                 ConfirmCardWindow.showSaved(type, amountCents) {
                     scope.launch {
-                        runCatching { PendingActions.undoEntered(db, txDao, pendingDao, dedupKey) }
-                            .onFailure { AppLog.w("Ntf", "undo auto entry failed", it) }
+                        // 撤销 = 退回待确认（不删账）：误触后这笔捕获仍在队列里，可重新入账
+                        val reverted = runCatching {
+                            PendingActions.revertEntered(db, txDao, pendingDao, dedupKey, entered.txId)
+                        }.onFailure { AppLog.w("Ntf", "undo auto entry failed", it) }.getOrDefault(false)
                         cancelCaptureNotification(entryNotifId(dedupKey))
-                        toast("已撤销")
+                        toast(if (reverted) "已撤销入账，已退回待确认" else "这笔账已不在了")
                     }
                 }
             }
@@ -470,7 +472,7 @@ object CaptureCenter {
             NotificationRules.dedupKey(packageName, hint.type, false, 0L, keyTime),
             identity,
         )
-        val pendingId = pendingDao.insert(
+        val queued = enqueuePending(
             PendingTransactionEntity(
                 type = hint.type,
                 amountCents = 0L,
@@ -484,9 +486,12 @@ object CaptureCenter {
             ),
         )
         captureDao.updateMatch(rawId, hint.ruleName + "·金额待补", true)
-        AppLog.i("Ntf", "amount missing, queued stub #$pendingId ${hint.ruleName} pkg=$packageName")
+        AppLog.i("Ntf", "amount missing, queued stub #${queued.id} ${hint.ruleName} pkg=$packageName")
+        if (queued.duplicate) return
+        val pendingId = queued.id
+        val queuedKey = queued.dedupKey
         if (pendingId > 0) {
-            postAmountRequestNotification(pendingId, dedupKey, hint)
+            postAmountRequestNotification(pendingId, queuedKey, hint)
         }
         traceCapture(
             channel = CaptureChannel.NOTIFICATION,
@@ -499,7 +504,7 @@ object CaptureCenter {
             type = hint.type,
             amountCents = 0,
             note = hint.note,
-            dedupKey = dedupKey,
+            dedupKey = queuedKey,
             outcome = TraceOutcome.PENDING,
         )
     }
@@ -592,15 +597,14 @@ object CaptureCenter {
         return androidx.core.app.NotificationCompat.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel, "撤销", pi).build()
     }
 
-    /** 通知栏「撤销」入口（CaptureActionReceiver 调用）：删除已入账的那笔 + 对应 AUTO 条目 */
+    /** 通知栏「撤销」入口（CaptureActionReceiver 调用）：把这笔账退回待确认（不删账） */
     fun undoEntryFromNotification(txId: Long, dedupKey: String) {
         if (!initialized) return
         scope.launch {
-            runCatching { if (txId > 0) txDao.deleteById(txId) }
-                .onFailure { AppLog.w("Ntf", "undo entry delete failed", it) }
+            val reverted = runCatching {
+                PendingActions.revertEntered(db, txDao, pendingDao, dedupKey, txId)
+            }.onFailure { AppLog.w("Ntf", "undo entry failed", it) }.getOrDefault(false)
             if (dedupKey.isNotBlank()) {
-                pendingDao.deleteByDedupKey(dedupKey)
-                if (dedupKey.isNotBlank()) AppLog.d("pending", "entry removed key=$dedupKey")
                 cancelCaptureNotification(entryNotifId(dedupKey))
                 if (ConfirmCardWindow.showingPendingId > 0 &&
                     ConfirmCardWindow.showingPendingId == pendingIdOfDedup(dedupKey)
@@ -608,8 +612,8 @@ object CaptureCenter {
                     mainHandler.post { ConfirmCardWindow.dismissConfirm() }
                 }
             }
-            toast("已撤销")
-            AppLog.i("Ntf", "undo entry from notification tx=#$txId key=$dedupKey")
+            toast(if (reverted) "已撤销入账，已退回待确认" else "这笔账已不在了")
+            AppLog.i("Ntf", "undo entry from notification tx=#$txId key=$dedupKey reverted=$reverted")
         }
     }
 
@@ -989,24 +993,35 @@ object CaptureCenter {
             mainHandler.post {
                 ConfirmCardWindow.showSaved(pending.type, amountCents) {
                     scope.launch {
-                        PendingActions.undoEntered(db, txDao, pendingDao, pending.dedupKey)
-                        toast("已撤销")
+                        val reverted = runCatching {
+                            PendingActions.revertEntered(
+                                db, txDao, pendingDao, pending.dedupKey,
+                                fallbackSourcePackage = pending.sourcePackage,
+                            )
+                        }.onFailure { AppLog.w("Overlay", "undo edited entry failed", it) }.getOrDefault(false)
+                        cancelCaptureNotification(entryNotifId(pending.dedupKey))
+                        toast(if (reverted) "已撤销入账，已退回待确认" else "这笔账已不在了")
                     }
                 }
             }
         }
     }
 
-    /** 已入账卡片的「忽略」：删除这笔账（含 AUTO 条目），一条点击纠错 */
+    /**
+     * 已入账卡片的「忽略」：把这笔账退回待确认（不删账）。
+     * 单点误触不再让一笔真实消费直接消失——条目留在待确认队列，可重新入账或显式丢弃。
+     */
     private suspend fun ignoreEntered(pending: PendingTransactionEntity) {
-        val removed = PendingActions.undoEntered(db, txDao, pendingDao, pending.dedupKey)
-        pendingDao.deleteById(pending.id)
+        val reverted = PendingActions.revertEntered(
+            db, txDao, pendingDao, pending.dedupKey,
+            fallbackSourcePackage = pending.sourcePackage,
+        )
         cancelCaptureNotification(entryNotifId(pending.dedupKey))
-        toast(if (removed) "已忽略，这笔未记账" else "这笔已被撤销")
-        AppLog.i("Overlay", "ignored (entry deleted=$removed) #${pending.id} key=${pending.dedupKey}")
+        toast(if (reverted) "已撤销入账，已退回待确认" else "这笔账已不在了")
+        AppLog.i("Overlay", "ignored (entry reverted=$reverted) #${pending.id} key=${pending.dedupKey}")
     }
 
-    /** 卡片确认入账：写账 + 撤销细条 + 撤销即删除该笔 */
+    /** 卡片确认入账：写账 + 撤销细条（撤销 = 把这笔退回待确认，不直接删账） */
     private suspend fun confirmFromOverlay(
         pending: PendingTransactionEntity,
         amountCents: Long,
@@ -1034,10 +1049,15 @@ object CaptureCenter {
         mainHandler.post {
             ConfirmCardWindow.showSaved(kindType, amountCents) {
                 scope.launch {
-                    runCatching { txDao.deleteById(txId) }
-                        .onSuccess { AppLog.i("Overlay", "undo confirmed entry tx=#$txId") }
-                        .onFailure { AppLog.w("Overlay", "undo failed", it) }
-                    toast("已撤销")
+                    // 撤销 = 退回待确认（不删账）：一笔真实消费不会因为一次误触彻底消失
+                    val reverted = runCatching {
+                        PendingActions.revertEntered(
+                            db, txDao, pendingDao, pending.dedupKey, txId,
+                            fallbackSourcePackage = pending.sourcePackage,
+                        )
+                    }.onFailure { AppLog.w("Overlay", "undo failed", it) }.getOrDefault(false)
+                    toast(if (reverted) "已撤销入账，已退回待确认" else "这笔账已不在了")
+                    AppLog.i("Overlay", "undo confirmed entry tx=#$txId reverted=$reverted")
                 }
             }
         }
@@ -1611,6 +1631,9 @@ object CaptureCenter {
                         notificationInstanceId = notificationIdentity.orEmpty(),
                     )
                     if (entered != null) {
+                        // 撞键换键补录后生效的是新键：溯源/通知/撤销条必须都用它，
+                        // 否则 trace 用旧键永远查不到这笔账（表现为「无对应账单」）
+                        val effectiveKey = entered.dedupKey
                         captureDao.updateMatch(rawId, parsed.ruleName, true)
                         AppLog.i(
                             "Ntf",
@@ -1626,7 +1649,7 @@ object CaptureCenter {
                             type = parsed.type,
                             amountCents = parsed.amountCents,
                             note = parsed.note,
-                            dedupKey = dedupKey,
+                            dedupKey = effectiveKey,
                             outcome = TraceOutcome.AUTO_ENTRY,
                         )
                         announceEntry(
@@ -1636,7 +1659,7 @@ object CaptureCenter {
                             amountCents = parsed.amountCents,
                             sourceLabel = NotificationRules.sourceLabel(packageName),
                             counterparty = "",
-                            dedupKey = dedupKey,
+                            dedupKey = effectiveKey,
                         )
                         return@launch
                     }
@@ -2666,6 +2689,8 @@ object CaptureCenter {
                 orderId = candidate.orderId.orEmpty(),
             )
             if (entered != null) {
+                // 撞键换键补录后生效的是新键：溯源/通知/撤销条统一用实际生效的键
+                val effectiveKey = entered.dedupKey
                 captureDao.updateMatch(rawId, candidate.ruleName, true)
                 AppLog.i(
                     "Page",
@@ -2684,7 +2709,7 @@ object CaptureCenter {
                     amountCents = candidate.amountCents,
                     counterparty = candidate.counterparty,
                     note = candidate.note,
-                    dedupKey = dedupKey,
+                    dedupKey = effectiveKey,
                     outcome = TraceOutcome.AUTO_ENTRY,
                 )
                 announceEntry(
@@ -2694,7 +2719,7 @@ object CaptureCenter {
                     amountCents = candidate.amountCents,
                     sourceLabel = candidate.sourceLabel,
                     counterparty = candidate.counterparty,
-                    dedupKey = dedupKey,
+                    dedupKey = effectiveKey,
                 )
                 return
             }
@@ -2703,7 +2728,7 @@ object CaptureCenter {
         // enterEntry 返回 null（最近同额预检命中/无可推测账户）时仍插入 pending：
         // 60 秒内的两笔真实同额交易（如两笔 1.00）必须保留为待确认，不能丢——
         // 真正的"同一稳定页面重复"已由上面的 recentPageCache 在融合/入账前拦掉。
-        val pendingId = pendingDao.insert(
+        val queued = enqueuePending(
             PendingTransactionEntity(
                 type = candidate.type,
                 amountCents = candidate.amountCents,
@@ -2720,6 +2745,8 @@ object CaptureCenter {
                 orderId = candidate.orderId.orEmpty(),
             ),
         )
+        val pendingId = queued.id
+        val queuedKey = queued.dedupKey
         captureDao.updateMatch(rawId, candidate.ruleName, true)
         AppLog.i(
             "Page",
@@ -2738,7 +2765,7 @@ object CaptureCenter {
             amountCents = candidate.amountCents,
             counterparty = candidate.counterparty,
             note = candidate.note,
-            dedupKey = dedupKey,
+            dedupKey = queuedKey,
             outcome = TraceOutcome.PENDING,
         )
         announceCapture(
@@ -2748,7 +2775,7 @@ object CaptureCenter {
             sourceLabel = candidate.sourceLabel,
             counterparty = candidate.counterparty,
             paymentMethod = candidate.paymentMethod,
-            dedupKey = dedupKey,
+            dedupKey = queuedKey,
             ruleName = candidate.ruleName,
             txTime = candidate.txTime,
             note = candidate.note,
@@ -2958,8 +2985,8 @@ object CaptureCenter {
         "收款成功", "退款成功", "转账成功", "付款方式", "支付方式", "交易单号", "订单编号",
     )
 
-    /** 直接入账结果：新交易 id + 对应的 AUTO 条目 id（卡片与通知都按它们工作） */
-    private data class Entered(val txId: Long, val pendingId: Long)
+    /** 直接入账结果：新交易 id + AUTO 条目 id + 实际生效的去重键（撞键补录后会带 `~盐`） */
+    private data class Entered(val txId: Long, val pendingId: Long, val dedupKey: String)
 
     /** 三种入账方式（入账提醒/悬浮窗入账/自动入账）任一开启即"先直接入账"；全关 = 完全手动模式 */
     private fun directEntryEnabled(): Boolean =
@@ -3121,7 +3148,7 @@ object CaptureCenter {
                 "entered #$txId ${Money.formatYuan(amountCents)} dedup=$dedupKey" +
                     (paymentInstrument?.let { " 支付工具=$it" } ?: ""),
             )
-            Entered(txId, pendingId)
+            Entered(txId, pendingId, dedupKey)
         } catch (e: Exception) {
             // externalId/待确认键唯一索引冲突 = 这笔已经入过账（重复通知/双通道）：
             // 找回原交易与关联条目，卡片/通知仍可用
@@ -3163,8 +3190,11 @@ object CaptureCenter {
                     "direct entry skipped (already recorded) dedup=$dedupKey " +
                         "tx=$existing pending=${existingPending?.id}",
                 )
-                if (existing != null || existingPending != null) {
-                    Entered(existing ?: -1L, existingPending?.id ?: -1L)
+                // 只有交易真的存在才算"这笔已记过"；只剩条目（账没落了）时必须回落待确认流程，
+                // 不能返回一个 txId=-1 的"已入账"结果——否则调用方会记一条假的「自动入账」溯源，
+                // 用户看到的是"已自动入账"却查不到任何账单。
+                if (existing != null) {
+                    Entered(existing, existingPending?.id ?: -1L, existingPending?.dedupKey ?: dedupKey)
                 } else {
                     null
                 }

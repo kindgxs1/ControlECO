@@ -179,16 +179,18 @@ internal object ConfirmCardWindow {
 
     // ---------- 已记入 · 撤销 细条 ----------
 
-    /** 确认入账后的非阻塞细条：**屏幕顶端**小条 + 撤销按钮，几秒后自动消失 */
+    /** 确认入账后的非阻塞细条：**屏幕顶端**小条 + 撤销按钮，停留时长可在设置里调 */
     fun showSaved(type: TxType, amountCents: Long, onUndo: () -> Unit) {
         if (!this::appContext.isInitialized) return
         removeSavedWindow()
+        val dismissMs = savedStripDismissMs(appContext)
 
         val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val host = OverlayComposeHost()
         val view = buildOverlayComposeView(appContext, host) {
             SavedStripContent(
                 text = "已记入 " + (if (type == TxType.EXPENSE) "支出 " else "收入 ") + Money.formatYuan(amountCents),
+                durationMs = dismissMs,
                 onUndo = {
                     onUndo()
                     removeSavedWindow()
@@ -220,7 +222,7 @@ internal object ConfirmCardWindow {
             savedHost = host
             val r = Runnable { removeSavedWindow() }
             savedDismiss = r
-            handler.postDelayed(r, SAVED_STRIP_DISMISS_MS)
+            if (dismissMs > 0L) handler.postDelayed(r, dismissMs)
             AppLog.i(TAG, "saved strip shown")
         }.onFailure {
             AppLog.w(TAG, "saved strip addView failed", it)

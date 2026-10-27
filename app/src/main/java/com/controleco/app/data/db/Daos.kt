@@ -715,6 +715,10 @@ interface PendingDao {
     @Query("DELETE FROM pending_transactions WHERE id = :id")
     suspend fun deleteById(id: Long)
 
+    /** 撤销已入账：把 AUTO 条目退回待确认（保留已捕获/已手改的字段，可重新入账或显式丢弃） */
+    @Query("UPDATE pending_transactions SET status = :status WHERE id = :id")
+    suspend fun setStatus(id: Long, status: PendingStatus)
+
     @Query("DELETE FROM pending_transactions WHERE dedupKey = :dedupKey")
     suspend fun deleteByDedupKey(dedupKey: String)
 }

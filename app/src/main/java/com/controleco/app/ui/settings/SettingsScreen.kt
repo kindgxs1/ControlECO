@@ -43,6 +43,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.BuildConfig
 import com.controleco.app.capture.CaptureAppCatalog
+import com.controleco.app.capture.overlay.SAVED_STRIP_DISMISS_OPTIONS
 import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.ui.common.AnimationPrefs
 import com.controleco.app.ui.common.EcoIcons
@@ -57,6 +58,7 @@ import com.controleco.app.ui.common.formatTimestamp
 import com.controleco.app.ui.eco.EcoGhostButton
 import com.controleco.app.ui.eco.EcoHeroCard
 import com.controleco.app.ui.eco.EcoIconButton
+import com.controleco.app.ui.eco.EcoPill
 import com.controleco.app.ui.eco.EcoPillTone
 import com.controleco.app.ui.eco.EcoPrimaryButton
 import com.controleco.app.ui.eco.EcoSheet
@@ -126,8 +128,10 @@ fun SettingsScreen(
     val homeQuickAdd by vm.homeQuickAddEnabled.collectAsStateWithLifecycle()
     val homeModeOrder by vm.homeModeOrder.collectAsStateWithLifecycle()
     val depositStart by vm.depositPlanStartMonth.collectAsStateWithLifecycle()
+    val savedStripMs by vm.savedStripDismissMs.collectAsStateWithLifecycle()
 
     var showModeOrder by remember { mutableStateOf(false) }
+    var showSavedStrip by remember { mutableStateOf(false) }
     var showDepositStart by remember { mutableStateOf(false) }
     var depositStartDraft by remember { mutableStateOf(YearMonth.now()) }
 
@@ -235,6 +239,17 @@ fun SettingsScreen(
                 trail = homeModeOrder.joinToString(" → ") { homeModeLabel(it) },
                 showChevron = true,
                 onClick = { showModeOrder = true },
+            )
+            SettingsDivider()
+            // 记一笔/自动入账后，屏幕顶端「已记入 · 撤销」细条的停留时长
+            SettingsRow(
+                title = "撤销条停留时长",
+                subtitle = "记一笔或自动入账后，屏幕顶端撤销条的停留时间",
+                icon = EcoIcons.Undo,
+                iconTint = MaterialTheme.eco.blue,
+                trail = "${savedStripMs / 1000} 秒",
+                showChevron = true,
+                onClick = { showSavedStrip = true },
             )
             SettingsDivider()
             // 存款页「每月存款」的起始月份：未设置时默认显示近 12 个月
@@ -367,6 +382,46 @@ fun SettingsScreen(
                         OrderArrow("↓", enabled = index < homeModeOrder.lastIndex) { vm.moveHomeMode(id, 1) }
                     }
                     if (index < homeModeOrder.lastIndex) Spacer(Modifier.height(8.dp))
+                }
+                Spacer(Modifier.height(16.dp))
+            }
+        }
+    }
+
+    if (showSavedStrip) {
+        val c = MaterialTheme.eco
+        EcoSheet(
+            onDismiss = { showSavedStrip = false },
+            title = "撤销条停留时长",
+            subtitle = "停留越久，误触后越从容；自动消失后仍可在待确认里重新入账",
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 6.dp)) {
+                SAVED_STRIP_DISMISS_OPTIONS.forEachIndexed { index, ms ->
+                    val selected = ms == savedStripMs
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (selected) c.blueSoft else c.surface2)
+                            .clickable {
+                                vm.setSavedStripDismissMs(ms)
+                                showSavedStrip = false
+                                EcoToast.show("撤销条停留 ${ms / 1000} 秒")
+                            }
+                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "${ms / 1000} 秒",
+                            style = EcoType.RowTitle,
+                            color = c.ink,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (selected) EcoPill(text = "当前", tone = EcoPillTone.Blue)
+                    }
+                    if (index < SAVED_STRIP_DISMISS_OPTIONS.lastIndex) {
+                        Spacer(Modifier.height(8.dp))
+                    }
                 }
                 Spacer(Modifier.height(16.dp))
             }

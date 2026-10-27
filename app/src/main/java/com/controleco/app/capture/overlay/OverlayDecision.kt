@@ -16,8 +16,21 @@ internal const val OVERLAY_DELAY_MS = 3_000L
 /** 无操作自动关闭的时长（关闭 = 视为入账，用户可点「忽略」明确不入账） */
 internal const val OVERLAY_AUTO_DISMISS_MS = 60_000L
 
-/** 确认后的「已记入 · 撤销」细条停留时长 */
+/** 确认后的「已记入 · 撤销」细条默认停留时长（可在设置 → 记账里调整） */
 internal const val SAVED_STRIP_DISMISS_MS = 6_000L
+
+/** 细条停留时长的偏好键（毫秒；与 CaptureCenter 共用同一个 settings 偏好文件） */
+internal const val KEY_SAVED_STRIP_DISMISS_MS = "saved_strip_dismiss_ms"
+
+/** 设置页可选的细条停留时长 */
+internal val SAVED_STRIP_DISMISS_OPTIONS: List<Long> = listOf(3_000L, 6_000L, 10_000L, 15_000L, 30_000L)
+
+/** 读当前细条停留时长（毫秒）：设置里没选过就取默认 6 秒 */
+internal fun savedStripDismissMs(context: android.content.Context): Long {
+    val v = context.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+        .getLong(KEY_SAVED_STRIP_DISMISS_MS, SAVED_STRIP_DISMISS_MS)
+    return if (v <= 0L) SAVED_STRIP_DISMISS_MS else v
+}
 
 /**
  * 前台包名的有效期：无障碍服务只在窗口切换（`TYPE_WINDOW_STATE_CHANGED`）时上报包名。

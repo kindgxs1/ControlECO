@@ -1994,7 +1994,17 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
             }
             val inserted = db.withTransaction {
                 val ids = txDao.insertAllIgnore(entities)
-                items.forEach { pendingDao.deleteById(it.id) }
+                // 逐条核对账目是否真的落库：insertAllIgnore 撞唯一约束会返回 -1，
+                // 无条件删条目会变成"条目没了、账也没有"（丢账）。只删确有账目的条目。
+                items.forEachIndexed { index, item ->
+                    if (ids.getOrNull(index) != -1L ||
+                        txDao.findIdByExternalId("NTF:${item.dedupKey}") != null
+                    ) {
+                        pendingDao.deleteById(item.id)
+                    } else {
+                        AppLog.w("pending", "confirmAll keep pending #${item.id} (no tx) key=${item.dedupKey}")
+                    }
+                }
                 ids.count { it != -1L }
             }
             AppLog.i("pending", "confirmAll: ${items.size} items, inserted=$inserted")
@@ -2766,6 +2776,9 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         _depositRangeEnd.value = loadDepositRangeBound(KEY_DEPOSIT_RANGE_END)
         _depositShowAll.value = prefs.getBoolean(KEY_DEPOSIT_SHOW_ALL, false)
         _homeQuickAddEnabled.value = prefs.getBoolean(KEY_HOME_QUICK_ADD, true)
+        _savedStripDismissMs.value = com.controleco.app.capture.overlay.savedStripDismissMs(
+            getApplication<AccBookApp>(),
+        )
         _homeModeOrder.value = loadHomeModeOrder()
         _subcategoryRollupMode.value = SubcategoryRollupMode.of(prefs.getString(KEY_SUBCAT_ROLLUP, null))
     }
@@ -2785,6 +2798,22 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putBoolean(KEY_HOME_QUICK_ADD, enabled).apply()
         _homeQuickAddEnabled.value = enabled
         AppLog.i("settings", "homeQuickAdd=$enabled")
+    }
+
+    // ---------- 「已记入 · 撤销」细条停留时长（设置 → 记账） ----------
+
+    private val _savedStripDismissMs = MutableStateFlow(
+        com.controleco.app.capture.overlay.savedStripDismissMs(getApplication<AccBookApp>()),
+    )
+
+    /** 记一笔/自动入账后，屏幕顶端撤销条的停留毫秒数 */
+    val savedStripDismissMs: StateFlow<Long> = _savedStripDismissMs
+
+    fun setSavedStripDismissMs(ms: Long) {
+        val v = if (ms <= 0L) com.controleco.app.capture.overlay.SAVED_STRIP_DISMISS_MS else ms
+        prefs.edit().putLong(com.controleco.app.capture.overlay.KEY_SAVED_STRIP_DISMISS_MS, v).apply()
+        _savedStripDismissMs.value = v
+        AppLog.i("settings", "savedStripDismissMs=$v")
     }
 
     // ---------- 首页三个页面的显示顺序（预算 / 分类 / 资产） ----------
