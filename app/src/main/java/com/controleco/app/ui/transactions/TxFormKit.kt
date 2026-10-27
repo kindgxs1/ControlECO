@@ -28,12 +28,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TimePicker
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.rememberDatePickerState
-import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -46,14 +44,21 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.controleco.app.data.db.TxType
 import com.controleco.app.ui.common.EcoIcons
+import com.controleco.app.ui.common.WheelPicker
+import com.controleco.app.ui.common.WheelTrigger
 import com.controleco.app.ui.eco.EcoChip
+import com.controleco.app.ui.eco.EcoField
+import com.controleco.app.ui.eco.EcoGhostButton
+import com.controleco.app.ui.eco.EcoPrimaryButton
 import com.controleco.app.ui.eco.EcoSegmented
+import com.controleco.app.ui.eco.EcoSheet
 import com.controleco.app.ui.eco.EcoSwitch
 import com.controleco.app.ui.theme.EcoType
 import com.controleco.app.ui.theme.accBook
@@ -64,6 +69,7 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 /**
  * 记账 / 编辑记录两页共用的表单件（只在 ui/transactions 内使用）。
@@ -95,7 +101,56 @@ internal val TxEditCurrencyStyle = txText(19f, 700, 0f, 23f)
 internal val TxKeypadStyle = txText(20f, 700, 0f, 24f)
 
 private val TxDateFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy/MM/dd")
-private val TxTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+private val TxTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
+
+// 时间滚轮的三列选项（两位数字，避免滚轮宽度随位数跳动）
+private fun txTwoDigits(value: Int): String = String.format(Locale.ROOT, "%02d", value)
+
+private val txHourItems = (0..23).map(::txTwoDigits)
+private val txMinuteItems = (0..59).map(::txTwoDigits)
+private val txSecondItems = (0..59).map(::txTwoDigits)
+
+/** 时间 → `HH:mm:ss`（滚轮与手动输入共用的展示口径） */
+private fun txFormatTime(hour: Int, minute: Int, second: Int): String =
+    String.format(Locale.ROOT, "%02d:%02d:%02d", hour, minute, second)
+
+/**
+ * 手动输入的时间解析（纯函数，`TxFormKitTest` 覆盖）。
+ * 支持 `HH:mm:ss` / `HH:mm` / `HHmmss` / `HHmm` / 单个小时数字；
+ * 任意非数字分隔（`: / . 空格 中文冒号`）都当分隔符。越界或解析失败返回 null。
+ */
+internal fun parseTimeInput(raw: String): LocalTime? {
+    val text = raw.trim().replace('：', ':')
+    if (text.isEmpty()) return null
+    val groups = text.split(Regex("[^0-9]+")).filter { it.isNotEmpty() }
+    if (groups.isEmpty()) return null
+    if (groups.size == 1 && groups[0].length > 2) {
+        // 连写的 3~6 位：HHmm / HHmmss（"1230" = 12:30，"123045" = 12:30:45）
+        val digits = groups[0]
+        return when (digits.length) {
+            3, 4 -> runCatching {
+                LocalTime.of(digits.dropLast(2).toInt(), digits.takeLast(2).toInt())
+            }.getOrNull()
+            5, 6 -> runCatching {
+                LocalTime.of(
+                    digits.dropLast(4).toInt(),
+                    digits.dropLast(2).takeLast(2).toInt(),
+                    digits.takeLast(2).toInt(),
+                )
+            }.getOrNull()
+            else -> null
+        }
+    }
+    if (groups.size > 3) return null
+    val hour = groups.getOrNull(0)?.toIntOrNull() ?: return null
+    val minute = groups.getOrNull(1)?.toIntOrNull() ?: 0
+    val second = groups.getOrNull(2)?.toIntOrNull() ?: 0
+    return if (hour in 0..23 && minute in 0..59 && second in 0..59) {
+        LocalTime.of(hour, minute, second)
+    } else {
+        null
+    }
+}
 
 // ---------- 标题 / 标签 ----------
 
@@ -267,8 +322,10 @@ fun TxDateField(
     }
 }
 
-/** 可选时间行：null = 留空使用当前时间；点击开系统时间面板，面板内支持清空 */
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * 可选时间行：null = 留空使用当前时间；点击打开时分秒选择面板
+ * （三列滚轮 + 手动输入 + 清空/确认）。
+ */
 @Composable
 fun TxTimeField(
     time: LocalTime?,
@@ -282,21 +339,13 @@ fun TxTimeField(
     val c = MaterialTheme.eco
     var show by remember { mutableStateOf(false) }
     if (show) {
-        val init = time ?: LocalTime.now()
-        val state = rememberTimePickerState(initialHour = init.hour, initialMinute = init.minute)
-        AlertDialog(
-            onDismissRequest = { show = false },
-            text = { TimePicker(state = state) },
-            confirmButton = {
-                TextButton(onClick = {
-                    onPick(LocalTime.of(state.hour, state.minute))
-                    show = false
-                }) { Text("确定") }
-            },
-            dismissButton = { TextButton(onClick = {
-                onPick(null)
+        TxTimeSheet(
+            initial = time,
+            onDismiss = { show = false },
+            onPick = {
+                onPick(it)
                 show = false
-            }) { Text("清空（当前时间）") } },
+            },
         )
     }
     val shape = RoundedCornerShape(radius)
@@ -326,6 +375,138 @@ fun TxTimeField(
             Icon(icon, contentDescription = "选择时间", tint = c.muted, modifier = Modifier.size(15.dp))
         }
     }
+}
+
+/**
+ * 时间选择面板：左「时」、中「分」、右「秒」三列滚轮（上下滑动），
+ * 下方可手动输入 `时:分:秒`，底部只有「清空」与「确认」两个动作。
+ * 滚轮滚动与手动输入双向同步，避免两处数值各说各话。
+ */
+@Composable
+private fun TxTimeSheet(
+    initial: LocalTime?,
+    onDismiss: () -> Unit,
+    onPick: (LocalTime?) -> Unit,
+) {
+    val start = initial ?: LocalTime.now()
+    var hour by remember { mutableIntStateOf(start.hour) }
+    var minute by remember { mutableIntStateOf(start.minute) }
+    var second by remember { mutableIntStateOf(start.second) }
+    var manual by remember { mutableStateOf(initial?.format(TxTimeFormatter).orEmpty()) }
+    var manualError by remember { mutableStateOf(false) }
+
+    // 滚轮变化 → 回写手动输入框；手动输入合法 → 回写滚轮
+    fun applyWheel(h: Int, m: Int, s: Int) {
+        hour = h
+        minute = m
+        second = s
+        manual = txFormatTime(h, m, s)
+        manualError = false
+    }
+
+    EcoSheet(
+        onDismiss = onDismiss,
+        title = "选择时间",
+        subtitle = "上下滑动选择时、分、秒，也可以直接输入",
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TimeWheelColumn("时", txHourItems, hour) { applyWheel(it, minute, second) }
+                TimeSeparator()
+                TimeWheelColumn("分", txMinuteItems, minute) { applyWheel(hour, it, second) }
+                TimeSeparator()
+                TimeWheelColumn("秒", txSecondItems, second) { applyWheel(hour, minute, it) }
+            }
+            Spacer(Modifier.height(14.dp))
+            EcoField(
+                label = "手动输入",
+                value = manual,
+                onValueChange = { raw ->
+                    manual = raw
+                    manualError = false
+                    parseTimeInput(raw)?.let { picked ->
+                        hour = picked.hour
+                        minute = picked.minute
+                        second = picked.second
+                    }
+                },
+                placeholder = "例如 12:30:45（或 123045）",
+                keyboardType = KeyboardType.Number,
+                isError = manualError,
+                supporting = if (manualError) {
+                    "时间格式不对：按 时:分:秒 输入（分隔符可省略）"
+                } else {
+                    "留空点确认 = 使用滚轮选择的时间；点清空 = 留空用当前时刻"
+                },
+            )
+            Spacer(Modifier.height(16.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                EcoGhostButton(
+                    text = "清空",
+                    onClick = { onPick(null) },
+                    modifier = Modifier.weight(1f),
+                )
+                EcoPrimaryButton(
+                    text = "确认",
+                    onClick = {
+                        val picked = if (manual.isBlank()) {
+                            LocalTime.of(hour, minute, second)
+                        } else {
+                            parseTimeInput(manual)
+                        }
+                        if (picked == null) {
+                            manualError = true
+                        } else {
+                            onPick(picked)
+                        }
+                    },
+                    modifier = Modifier.weight(1.4f),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+/** 时间滚轮的一列：上方单位标签 + 可上下滑动的滚轮 */
+@Composable
+private fun TimeWheelColumn(
+    label: String,
+    items: List<String>,
+    selected: Int,
+    onSelected: (Int) -> Unit,
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, style = EcoType.FieldLabel, color = MaterialTheme.eco.muted)
+        Spacer(Modifier.height(4.dp))
+        WheelPicker(
+            items = items,
+            selectedIndex = selected,
+            onSelected = onSelected,
+            modifier = Modifier.width(76.dp),
+            label = label,
+            itemHeight = 30.dp,
+            rows = 3,
+            expandedRows = 5,
+            trigger = WheelTrigger.DRAG,
+            updateWhileScrolling = true,
+        )
+    }
+}
+
+/** 时/分/秒之间的分隔符（与滚轮中心对齐） */
+@Composable
+private fun TimeSeparator() {
+    Text(
+        ":",
+        style = EcoType.SectionTitle,
+        color = MaterialTheme.eco.muted,
+        modifier = Modifier.padding(start = 2.dp, end = 2.dp, top = 26.dp),
+    )
 }
 
 /**

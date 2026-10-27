@@ -6,6 +6,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -43,6 +45,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.BuildConfig
 import com.controleco.app.capture.CaptureAppCatalog
+import com.controleco.app.capture.overlay.SAVED_STRIP_DISMISS_OPTIONS_MS
 import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.ui.common.AnimationPrefs
 import com.controleco.app.ui.common.EcoIcons
@@ -126,9 +129,11 @@ fun SettingsScreen(
     val homeQuickAdd by vm.homeQuickAddEnabled.collectAsStateWithLifecycle()
     val homeModeOrder by vm.homeModeOrder.collectAsStateWithLifecycle()
     val depositStart by vm.depositPlanStartMonth.collectAsStateWithLifecycle()
+    val stripDismissMs by vm.savedStripDismissMs.collectAsStateWithLifecycle()
 
     var showModeOrder by remember { mutableStateOf(false) }
     var showDepositStart by remember { mutableStateOf(false) }
+    var showStripDuration by remember { mutableStateOf(false) }
     var depositStartDraft by remember { mutableStateOf(YearMonth.now()) }
 
     val listenerGranted = remember(resumeTick) { vm.isListenerGranted() }
@@ -163,6 +168,17 @@ fun SettingsScreen(
                 title = "自动入账",
                 checked = autoEntry,
                 onCheckedChange = { vm.setAutoEntryEnabled(it) },
+            )
+            SettingsDivider()
+            // 「已记入 · 撤销」提示条停留多久：悬浮窗保存后、自动入账后都按这个时长收起
+            SettingsRow(
+                title = "撤销条停留时长",
+                subtitle = "记一笔后屏幕顶端的「撤销」提示停留多久",
+                icon = EcoIcons.Clock,
+                iconTint = MaterialTheme.eco.blue,
+                trail = "${stripDismissMs / 1000} 秒",
+                showChevron = true,
+                onClick = { showStripDuration = true },
             )
             SettingsDivider()
             // 待确认账单：自动记账的产出队列，有笔数时副标直接显示待处理条数
@@ -420,6 +436,56 @@ fun SettingsScreen(
                         },
                         modifier = Modifier.fillMaxWidth(),
                     )
+                }
+                Spacer(Modifier.height(14.dp))
+            }
+        }
+    }
+
+    if (showStripDuration) {
+        val c = MaterialTheme.eco
+        EcoSheet(
+            onDismiss = { showStripDuration = false },
+            title = "撤销条停留时长",
+            subtitle = "记一笔后屏幕顶端的「撤销」提示停留多久",
+        ) {
+            Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                SAVED_STRIP_DISMISS_OPTIONS_MS.forEach { ms ->
+                    val selected = ms == stripDismissMs
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (selected) c.blueSoft else c.surface2)
+                            .border(
+                                1.dp,
+                                if (selected) c.blue.copy(alpha = 0.5f) else c.rule,
+                                RoundedCornerShape(12.dp),
+                            )
+                            .clickable {
+                                vm.setSavedStripDismissMs(ms)
+                                showStripDuration = false
+                                EcoToast.show("撤销条停留 ${ms / 1000} 秒")
+                            }
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "${ms / 1000} 秒",
+                            style = EcoType.RowTitle,
+                            color = c.ink,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (selected) {
+                            Icon(
+                                EcoIcons.Check,
+                                contentDescription = null,
+                                tint = c.blue,
+                                modifier = Modifier.size(15.dp),
+                            )
+                        }
+                    }
+                    if (ms != SAVED_STRIP_DISMISS_OPTIONS_MS.last()) Spacer(Modifier.height(8.dp))
                 }
                 Spacer(Modifier.height(14.dp))
             }

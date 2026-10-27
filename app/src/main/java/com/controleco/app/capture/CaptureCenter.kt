@@ -10,12 +10,14 @@ import androidx.room.withTransaction
 import com.controleco.app.AccBookApp
 import com.controleco.app.BuildConfig
 import com.controleco.app.capture.overlay.canSyncOverlayEdits
+import com.controleco.app.capture.overlay.clampSavedStripDismissMs
 import com.controleco.app.capture.overlay.ConfirmCardWindow
 import com.controleco.app.capture.overlay.DismissOutcome
 import com.controleco.app.capture.overlay.dismissOutcome
 import com.controleco.app.capture.overlay.effectiveForegroundPackage
 import com.controleco.app.capture.overlay.OVERLAY_DELAY_MS
 import com.controleco.app.capture.overlay.OverlayConditions
+import com.controleco.app.capture.overlay.SAVED_STRIP_DISMISS_MS
 import com.controleco.app.capture.overlay.shouldShowOverlay
 import com.controleco.app.capture.NotificationRules.ParsedNotification
 import com.controleco.app.capture.page.PageCandidate
@@ -54,6 +56,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 
 /**
@@ -86,6 +89,7 @@ object CaptureCenter {
     private const val KEY_BANK_PUSH_ENABLED = "bank_push_enabled"
     private const val KEY_SMS_CAPTURE_ENABLED = "sms_capture_enabled"
     private const val KEY_OVERLAY_CONFIRM_ENABLED = "overlay_confirm_enabled"
+    private const val KEY_SAVED_STRIP_DISMISS_MS = "saved_strip_dismiss_ms"
     private const val KEY_AMOUNT_REPLY_ENABLED = "amount_reply_enabled"
     private const val KEY_NEEDS_REAUTH = "needs_reauth_after_update"
     private const val KEY_LAST_VERSION_CODE = "last_version_code"
@@ -139,6 +143,13 @@ object CaptureCenter {
     )
     private val mainHandler = Handler(Looper.getMainLooper())
     private val recentKeys = LinkedHashMap<String, Long>()
+
+    /**
+     * 「同一笔只弹一次」：本进程内已**成功弹出**过卡片的待确认条目 id（有界，仅主线程访问）。
+     * 捕获可能被重发/富化/补试多次触发弹卡，同一 id 用户看过一次就不再打扰。
+     */
+    private val shownCardIds = LinkedHashSet<Long>()
+    private const val SHOWN_CARD_CAP = 128
 
     /** 稳定页面去重：带页面交易时间的结果页在短 TTL 内只处理一次（跨流程重置也有效） */
     private val recentPageCache = RecentPageCache()
@@ -361,10 +372,35 @@ object CaptureCenter {
         ) {
             return
         }
+        // 自动入账：账已记好，在**屏幕顶端**给一条「已记入 · 撤销」细条（与卡片里点「保存」后的反馈一致）。
+        // 细条弹不出来（无权限/被拦截）才回落通知，避免同一笔既弹条又弹通知。
+        if (isAutoEntryEnabled() && !appInForeground && canDrawOverlays() &&
+            showSavedStrip(entered.txId, type, amountCents, dedupKey)
+        ) {
+            return
+        }
         // 悬浮窗入账开着却没能弹卡：账已经记好，但必须让用户看得到（不受「入账提醒」开关约束）
         postEntryNotification(
             entered.txId, type, isRefund, amountCents, counterparty, sourceLabel, dedupKey,
             forceNotify = isOverlayConfirmEnabled(),
+        )
+    }
+
+    /**
+     * 在屏幕顶端弹「已记入 · 撤销」细条（WindowManager 必须在主线程操作）。
+     * 返回 false = 窗口没弹出来，调用方回落通知。撤销走通知栏同一条删除逻辑（删账 + 删 AUTO 条目）。
+     */
+    private suspend fun showSavedStrip(
+        txId: Long,
+        type: TxType,
+        amountCents: Long,
+        dedupKey: String,
+    ): Boolean = withContext(Dispatchers.Main.immediate) {
+        ConfirmCardWindow.showSaved(
+            type = type,
+            amountCents = amountCents,
+            dismissMs = savedStripDismissMs(),
+            onUndo = { undoEntryFromNotification(txId, dedupKey) },
         )
     }
 
@@ -727,6 +763,20 @@ object CaptureCenter {
 
     fun canDrawOverlays(): Boolean = initialized && Settings.canDrawOverlays(appContext)
 
+    /** 「已记入 · 撤销」细条停留时长（毫秒，默认 6 秒；设置里可调，异常值回落默认） */
+    fun savedStripDismissMs(): Long =
+        if (!initialized) {
+            SAVED_STRIP_DISMISS_MS
+        } else {
+            clampSavedStripDismissMs(prefs().getLong(KEY_SAVED_STRIP_DISMISS_MS, SAVED_STRIP_DISMISS_MS))
+        }
+
+    fun setSavedStripDismissMs(ms: Long) {
+        val v = clampSavedStripDismissMs(ms)
+        if (initialized) prefs().edit().putLong(KEY_SAVED_STRIP_DISMISS_MS, v).apply()
+        AppLog.i("Overlay", "savedStripDismissMs=$v")
+    }
+
     /** MainActivity 前台变化：进入前台立即收起卡片（应用内用待确认列表，卡片悬在本应用上会挡操作） */
     fun setAppForeground(foreground: Boolean) {
         appInForeground = foreground
@@ -881,6 +931,12 @@ object CaptureCenter {
         dedupKey: String,
     ): Boolean = suspendCancellableCoroutine { cont ->
         mainHandler.post {
+            // 同一笔只弹一次：用户已看过该条目（重发/富化/补试触发）就静默返回，
+            // 让调用方按"卡片不可用"回落通知（通知侧另有自身的去重）。
+            if (pending.id > 0 && pending.id in shownCardIds) {
+                if (cont.isActive) cont.resume(false)
+                return@post
+            }
             val shown = ConfirmCardWindow.showConfirm(
                 pending = pending,
                 categories = categories,
@@ -944,6 +1000,12 @@ object CaptureCenter {
                     }
                 },
             )
+            if (shown && pending.id > 0) {
+                shownCardIds += pending.id
+                while (shownCardIds.size > SHOWN_CARD_CAP) {
+                    shownCardIds.remove(shownCardIds.first())
+                }
+            }
             if (cont.isActive) cont.resume(shown)
         }
     }
@@ -973,7 +1035,9 @@ object CaptureCenter {
         toast("已更新")
         if (withStrip) {
             mainHandler.post {
-                ConfirmCardWindow.showSaved(pending.type, amountCents) {
+                ConfirmCardWindow.showSaved(
+                    pending.type, amountCents, dismissMs = savedStripDismissMs(),
+                ) {
                     scope.launch {
                         PendingActions.undoEntered(db, txDao, pendingDao, pending.dedupKey)
                         toast("已撤销")
@@ -1018,7 +1082,9 @@ object CaptureCenter {
         toast("已记入")
         if (txId == null) return // 已入过账（重复通知/双通道竞态）
         mainHandler.post {
-            ConfirmCardWindow.showSaved(kindType, amountCents) {
+            ConfirmCardWindow.showSaved(
+                kindType, amountCents, dismissMs = savedStripDismissMs(),
+            ) {
                 scope.launch {
                     runCatching { txDao.deleteById(txId) }
                         .onSuccess { AppLog.i("Overlay", "undo confirmed entry tx=#$txId") }
@@ -1388,13 +1454,13 @@ object CaptureCenter {
         val interested = NotificationRules.isInterested(packageName) &&
             CaptureAppCatalog.isWatched(appContext, packageName)
         val captureAll = isDebugCaptureAll(isDebugBuild)
-        // 银行 App 动账推送：不在支付白名单里，走「正文【银行名】签名 / 银行包名短名单」两道线索。
-        // 是否真的入库要在解析通过后决定（银行 App 的营销/通知类推送极密集，未命中不入库）。
-        // 与 debug 全量记录无关：签名线索在就尝试解析，避免采样模式下银行通道失效。
+        // 银行 App 动账推送：**只认银行包名短名单**（2026-10-27 用户规则）。
+        // 不再看正文里的【银行名】签名——支付/电商 App 转发银行消息、银行 App 的营销推送
+        // 都可能带银行名，按内容猜测会把非动账通知误送进银行解析。
+        // 是否真的入库仍要在解析通过后决定（银行 App 的通知类推送极密集，未命中不入库）。
         val bankCandidate = !interested && isBankPushEnabled() && isCaptureEnabled() &&
             CaptureAppCatalog.isWatchedOrUnknown(appContext, packageName) &&
-            (BankLedgerRules.detectBankName("$title $text $bigText") != null ||
-                BankLedgerRules.bankNameOfPackage(packageName) != null)
+            BankLedgerRules.bankNameOfPackage(packageName) != null
         if (!interested && !captureAll && !bankCandidate) {
             AppLog.d("Ntf", "skip (not interested) pkg=$packageName title=[$title]")
             return
@@ -1784,6 +1850,33 @@ object CaptureCenter {
             return
         }
 
+        // 同一家银行的**不同通道**（短信 ⇄ App 推送 ⇄ App 页面）重复线索：同额、同向、±90s
+        // 且卡尾号不冲突时只保留一条，后到的仅补账户线索（2026-10-27 用户规则）。
+        // 同通道同额的两条（两次真实消费）不并，见 CrossChannelDedup.isSameBankTransaction。
+        val sameBank = findSameBankPending(ledger, sourceAt)
+        if (sameBank != null) {
+            mergeBankInfoIntoPending(sameBank, ledger, bankIdentity)
+            refreshCardIfShowing(sameBank.id)
+            retryCardIfNoCard(sameBank.id)
+            captureDao.updateMatch(rawId, ledger.ruleName + "·同银行去重", true)
+            traceCapture(
+                channel = channel,
+                packageName = ledger.sourceKey,
+                title = if (channel == CaptureChannel.SMS) "银行短信" else "银行推送",
+                text = ledger.note,
+                bigText = "",
+                capturedAt = sourceAt,
+                matchedRule = ledger.ruleName,
+                type = ledger.type,
+                amountCents = ledger.amountCents,
+                counterparty = ledger.merchant,
+                note = ledger.note,
+                dedupKey = sameBank.dedupKey,
+                outcome = TraceOutcome.MERGED_CROSS,
+            )
+            return
+        }
+
         // 跨通道归并（±130s）：支付侧已捕获同笔 → 银行侧只补充账户线索，
         // 不再产生第二条。跨应用关联必须有页面披露的银行卡线索，金额+时间不够。
         val related = findCrossChannelPending(ledger, sourceAt, bankIdentity)
@@ -1974,6 +2067,132 @@ object CaptureCenter {
         }
         return null
     }
+
+    /**
+     * 同一家银行的**不同通道**重复线索（短信 ⇄ App 推送 ⇄ App 页面）：同额、同向、±90s，
+     * 且卡尾号不冲突时认作同一笔（2026-10-27 用户规则），后到的只补账户线索。
+     *
+     * 同通道同额的两条（两次真实消费）不并——[CrossChannelDedup.isSameBankTransaction]
+     * 要求来源键不同；候选不唯一时按证据不足处理，保持独立记录。
+     */
+    private suspend fun findSameBankPending(
+        ledger: BankLedgerRules.BankLedger,
+        eventTime: Long,
+    ): PendingTransactionEntity? {
+        val incoming = CrossChannelDedup.Signature(
+            amountCents = ledger.amountCents,
+            type = ledger.type,
+            isRefund = ledger.isRefund,
+            source = ledger.sourceKey,
+            time = eventTime,
+        )
+        val pool = pendingDao.getMergeable()
+        val candidates = pool.filter { entry ->
+            CrossChannelDedup.isSameBankTransaction(
+                CrossChannelDedup.signatureOf(
+                    amountCents = entry.amountCents,
+                    type = entry.type,
+                    refundMark = entry.refundMark,
+                    source = entry.sourcePackage,
+                    time = entry.timestamp,
+                ),
+                incoming,
+            ) && cardTailCompatible(entry, ledger)
+        }
+        if (candidates.size > 1) {
+            AppLog.w("Sms", "same-bank ambiguous (${candidates.size} entries), keep separate ${ledger.ruleName}")
+            return null
+        }
+        candidates.singleOrNull()?.let { return it }
+
+        // 同银行 App 页面先到、本行推送后到：来源键相同（都是银行包名），
+        // [CrossChannelDedup.isSameBankTransaction] 按"同一通道不并"拒绝；但既有条目若是页面捕获
+        // （有页面流程身份、没有银行事件身份），这仍是同一家银行的不同通道，允许归并。
+        val pageFirst = pool.filter { entry ->
+            entry.sourcePackage == ledger.sourceKey &&
+                entryBankInstanceId(entry).isEmpty() &&
+                entryFlowId(entry).startsWith(PAGE_ID_PREFIX) &&
+                entry.type == ledger.type &&
+                (entry.refundMark == RefundMark.REFUND_INCOME) == ledger.isRefund &&
+                entry.amountCents == ledger.amountCents &&
+                kotlin.math.abs(entry.timestamp - eventTime) <= CrossChannelDedup.SAME_BANK_WINDOW_MS &&
+                cardTailCompatible(entry, ledger)
+        }
+        if (pageFirst.size > 1) {
+            AppLog.w("Sms", "same-bank page-first ambiguous (${pageFirst.size} entries), keep separate ${ledger.ruleName}")
+            return null
+        }
+        return pageFirst.singleOrNull()
+    }
+
+    /**
+     * 银行 App 页面 ⇄ 同银行短信/推送 的同笔候选（2026-10-27 用户规则）。
+     *
+     * 覆盖两种通道组合：
+     * - 来源键不同（页面包名 ⇄ `SMS:银行名` / 另一来源的推送）：复用 [CrossChannelDedup.isSameBankTransaction]；
+     * - 来源键相同（银行 App 页面 ⇄ 同一 App 的推送）：既有条目带银行事件身份（说明它来自短信/推送）
+     *   时仍算不同通道；同包页面的重复观察由 [pickRelatedPendingForPage] 的流程/时间判定负责。
+     * 卡尾号冲突时不并——宁可留两条，也不把两张卡的交易合成一笔。
+     */
+    private fun findSameBankPendingForPage(
+        packageName: String,
+        type: TxType,
+        amountCents: Long,
+        isRefund: Boolean,
+        eventTime: Long,
+        cardTail: String?,
+        mergeable: List<PendingTransactionEntity>,
+    ): PendingTransactionEntity? {
+        val incomingBank = BankLedgerRules.bankNameOfPackage(packageName) ?: return null
+        val incoming = CrossChannelDedup.Signature(amountCents, type, isRefund, packageName, eventTime)
+        val candidates = mergeable.filter { entry ->
+            val entryBank = CrossChannelDedup.bankNameOfSource(entry.sourcePackage) ?: return@filter false
+            if (entryBank != incomingBank) return@filter false
+            val sameBank = if (entry.sourcePackage != packageName) {
+                CrossChannelDedup.isSameBankTransaction(
+                    CrossChannelDedup.signatureOf(
+                        entry.amountCents, entry.type, entry.refundMark, entry.sourcePackage, entry.timestamp,
+                    ),
+                    incoming,
+                )
+            } else {
+                // 同包名：既有条目必须来自短信/推送（银行事件身份非空），否则那是同一页面的重复观察
+                entryBankInstanceId(entry).isNotEmpty() &&
+                    entry.type == type &&
+                    (entry.refundMark == RefundMark.REFUND_INCOME) == isRefund &&
+                    entry.amountCents == amountCents &&
+                    kotlin.math.abs(entry.timestamp - eventTime) <= CrossChannelDedup.SAME_BANK_WINDOW_MS
+            }
+            sameBank && cardTailCompatible(entry, cardTail)
+        }
+        if (candidates.size > 1) {
+            AppLog.w("Dedup", "same-bank page ambiguous (${candidates.size} entries), keep separate $packageName")
+            return null
+        }
+        return candidates.singleOrNull()
+    }
+
+    /**
+     * 卡尾号保护：两侧都能读出尾号且不同 → 不是同一张卡，不并；一侧读不出视为无法核对，放行。
+     * 条目侧优先支付方式、其次备注（页面/通知常把"尾号1234"写进备注）。
+     */
+    private fun cardTailCompatible(
+        existing: PendingTransactionEntity,
+        incomingTail: String?,
+    ): Boolean {
+        if (incomingTail.isNullOrEmpty()) return true
+        val existingTail = com.controleco.app.capture.page.PaymentInstrumentParser
+            .tailOf(existing.paymentInstrument)
+            .ifEmpty {
+                com.controleco.app.capture.page.PaymentInstrumentParser.tailOf(existing.note)
+            }
+        return existingTail.isEmpty() || existingTail == incomingTail
+    }
+
+    private fun cardTailCompatible(
+        existing: PendingTransactionEntity,
+        ledger: BankLedgerRules.BankLedger,
+    ): Boolean = cardTailCompatible(existing, ledger.cardTail)
 
     /**
      * 支付类条目里是否出现了可核对线索：支付侧写了银行名/卡尾号，
@@ -2558,6 +2777,29 @@ object CaptureCenter {
                 mergePageIntoExisting(sameByTime, candidate, rawId, snapshotText, capturedAt, flowIdentity)
                 return
             }
+        }
+        // 同一家银行的其它通道（短信/推送）先到：银行 App 页面只回填既有条目，不另记一笔（2026-10-27 用户规则）
+        val sameBankPage = findSameBankPendingForPage(
+            packageName = packageName,
+            type = candidate.type,
+            amountCents = candidate.amountCents,
+            isRefund = candidate.isRefund,
+            eventTime = candidate.txTime ?: capturedAt,
+            cardTail = com.controleco.app.capture.page.PaymentInstrumentParser
+                .tailOf(candidate.instrument?.label.orEmpty()).takeIf { it.isNotEmpty() },
+            mergeable = mergeable,
+        )
+        if (sameBankPage != null) {
+            AppLog.i(
+                "Dedup",
+                "same-bank page merge ${candidate.ruleName} -> #${sameBankPage.id} ${sameBankPage.sourcePackage}",
+            )
+            mergePageIntoExisting(
+                RelatedPending(sameBankPage, sameAmount = true),
+                candidate, rawId, snapshotText, capturedAt, flowIdentity,
+                crossApp = true,
+            )
+            return
         }
         // 银行动账 ⇄ 支付渠道页面（仅支出）：银行短信/推送先到、本页后到 → 回填既有银行侧条目，
         // 不另记一笔（页面信息最全：商户/支付工具/时间）。

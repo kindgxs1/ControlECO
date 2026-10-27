@@ -1678,6 +1678,18 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     /** 悬浮窗权限（悬浮确认卡的前提；未授权自动回落通知） */
     fun isOverlayGranted(): Boolean = CaptureCenter.canDrawOverlays()
 
+    // ---------- 撤销条停留时长 ----------
+
+    private val _savedStripDismissMs = MutableStateFlow(CaptureCenter.savedStripDismissMs())
+
+    /** 「已记入 · 撤销」细条停留时长（毫秒）：设置里可调 */
+    val savedStripDismissMs: StateFlow<Long> = _savedStripDismissMs
+
+    fun setSavedStripDismissMs(ms: Long) {
+        CaptureCenter.setSavedStripDismissMs(ms)
+        _savedStripDismissMs.value = CaptureCenter.savedStripDismissMs()
+    }
+
     /** 最近一次弹卡判定（"已弹出"或未弹原因）：权限页展示，排查"为什么没弹卡" */
     val overlayDecision: StateFlow<String?> = CaptureCenter.overlayDecision
 

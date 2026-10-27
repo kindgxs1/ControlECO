@@ -1050,16 +1050,23 @@ private fun SubCategoryPanel(
     }
 }
 
-/** 「已记入 支出 ¥20.06 · 撤销」细条（非阻塞，底部悬浮，几秒后自动消失） */
+/**
+ * 「已记入 支出 ¥20.06 · 撤销」细条（非阻塞，悬浮在屏幕顶端，[durationMs] 后自动消失）。
+ * 进度条与窗口收起时长共用同一个值（设置里可调）
+ */
 @Composable
-internal fun SavedStripContent(text: String, onUndo: () -> Unit) {
+internal fun SavedStripContent(
+    text: String,
+    onUndo: () -> Unit,
+    durationMs: Long = SAVED_STRIP_DISMISS_MS,
+) {
     val c = MaterialTheme.eco
     val progress = remember { Animatable(0f) }
-    LaunchedEffect(Unit) {
+    LaunchedEffect(durationMs) {
         progress.animateTo(
             targetValue = 1f,
             animationSpec = tween(
-                durationMillis = SAVED_STRIP_DISMISS_MS.toInt(),
+                durationMillis = durationMs.toInt(),
                 easing = LinearEasing,
             ),
         )

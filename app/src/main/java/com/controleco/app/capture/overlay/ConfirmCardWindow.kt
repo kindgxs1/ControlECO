@@ -179,16 +179,26 @@ internal object ConfirmCardWindow {
 
     // ---------- 已记入 · 撤销 细条 ----------
 
-    /** 确认入账后的非阻塞细条：底部小条 + 撤销按钮，几秒后自动消失 */
-    fun showSaved(type: TxType, amountCents: Long, onUndo: () -> Unit) {
-        if (!this::appContext.isInitialized) return
+    /**
+     * 确认入账后的非阻塞细条：**屏幕顶端**小条 + 撤销按钮，[dismissMs] 后自动消失。
+     * 返回 false = 窗口没弹出来（无权限/被拦截），调用方需保留通知兜底。
+     */
+    fun showSaved(
+        type: TxType,
+        amountCents: Long,
+        dismissMs: Long = SAVED_STRIP_DISMISS_MS,
+        onUndo: () -> Unit,
+    ): Boolean {
+        if (!this::appContext.isInitialized) return false
         removeSavedWindow()
 
+        val duration = clampSavedStripDismissMs(dismissMs)
         val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val host = OverlayComposeHost()
         val view = buildOverlayComposeView(appContext, host) {
             SavedStripContent(
                 text = "已记入 " + (if (type == TxType.EXPENSE) "支出 " else "收入 ") + Money.formatYuan(amountCents),
+                durationMs = duration,
                 onUndo = {
                     onUndo()
                     removeSavedWindow()
@@ -204,27 +214,29 @@ internal object ConfirmCardWindow {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            // 原型：底部 96dp 悬浮，不压住系统手势区
-            y = dp(96)
+            // 顶端居中：落在状态栏下方，避开系统图标与刘海
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = statusBarHeight() + dp(8)
             if (Build.VERSION.SDK_INT >= 28) {
                 layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
         }
 
-        runCatching {
+        return try {
             wm.addView(view, params)
             host.attach()
             savedView = view
             savedHost = host
             val r = Runnable { removeSavedWindow() }
             savedDismiss = r
-            handler.postDelayed(r, SAVED_STRIP_DISMISS_MS)
-            AppLog.i(TAG, "saved strip shown")
-        }.onFailure {
-            AppLog.w(TAG, "saved strip addView failed", it)
+            handler.postDelayed(r, duration)
+            AppLog.i(TAG, "saved strip shown at top (${duration}ms)")
+            true
+        } catch (e: Exception) {
+            AppLog.w(TAG, "saved strip addView failed", e)
             runCatching { host.destroy() }
+            false
         }
     }
 
@@ -307,4 +319,10 @@ internal object ConfirmCardWindow {
 
     private fun dp(value: Int): Int =
         (value * appContext.resources.displayMetrics.density).toInt()
+
+    /** 状态栏高度：顶端悬浮条必须落在状态栏下方，否则会被系统图标/刘海盖住 */
+    private fun statusBarHeight(): Int = runCatching {
+        val id = appContext.resources.getIdentifier("status_bar_height", "dimen", "android")
+        if (id > 0) appContext.resources.getDimensionPixelSize(id) else 0
+    }.getOrDefault(0)
 }

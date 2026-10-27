@@ -4,6 +4,7 @@ import com.controleco.app.data.db.RefundMark
 import com.controleco.app.data.db.TxType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -351,5 +352,77 @@ class CrossChannelDedupTest {
             cardTail = bank.cardTail,
             paySource = NotificationRules.WECHAT,
         ))
+    }
+
+    // ---------- 同一家银行的不同通道（短信 ⇄ 推送 ⇄ 页面） ----------
+
+    @Test
+    fun `银行来源解析出标准银行名`() {
+        assertEquals("招商银行", CrossChannelDedup.bankNameOfSource("SMS:招商银行"))
+        assertEquals("招商银行", CrossChannelDedup.bankNameOfSource("SMS:招行"))
+        assertEquals("招商银行", CrossChannelDedup.bankNameOfSource("cmb.pb"))
+        assertEquals("工商银行", CrossChannelDedup.bankNameOfSource("com.icbc"))
+        // 支付渠道不是银行来源
+        assertNull(CrossChannelDedup.bankNameOfSource(NotificationRules.WECHAT))
+        assertNull(CrossChannelDedup.bankNameOfSource(NotificationRules.UNIONPAY))
+    }
+
+    @Test
+    fun `同银行短信与App推送同额同向归并`() {
+        assertTrue(
+            CrossChannelDedup.isSameBankTransaction(
+                sig(5000, source = "SMS:招商银行", time = t0),
+                sig(5000, source = "cmb.pb", time = t0 + 30_000),
+            ),
+        )
+    }
+
+    @Test
+    fun `同银行同一通道的两条不归并`() {
+        // 两次真实同额消费都走短信：来源键相同，无法与"重复投递"区分，保守保留两条
+        assertFalse(
+            CrossChannelDedup.isSameBankTransaction(
+                sig(5000, source = "SMS:招商银行", time = t0),
+                sig(5000, source = "SMS:招商银行", time = t0 + 10_000),
+            ),
+        )
+    }
+
+    @Test
+    fun `不同银行之间仍不归并`() {
+        assertFalse(
+            CrossChannelDedup.isSameBankTransaction(
+                sig(5000, source = "SMS:招商银行", time = t0),
+                sig(5000, source = "SMS:工商银行", time = t0),
+            ),
+        )
+    }
+
+    @Test
+    fun `同银行不同通道_金额方向时间任一不符都不归并`() {
+        assertFalse(
+            CrossChannelDedup.isSameBankTransaction(
+                sig(5000, source = "SMS:招商银行", time = t0),
+                sig(5001, source = "cmb.pb", time = t0),
+            ),
+        )
+        assertFalse(
+            CrossChannelDedup.isSameBankTransaction(
+                sig(5000, type = TxType.EXPENSE, source = "SMS:招商银行", time = t0),
+                sig(5000, type = TxType.INCOME, source = "cmb.pb", time = t0),
+            ),
+        )
+        assertFalse(
+            CrossChannelDedup.isSameBankTransaction(
+                sig(5000, source = "SMS:招商银行", time = t0),
+                sig(5000, source = "cmb.pb", time = t0 + CrossChannelDedup.SAME_BANK_WINDOW_MS + 1),
+            ),
+        )
+        assertTrue(
+            CrossChannelDedup.isSameBankTransaction(
+                sig(5000, source = "SMS:招商银行", time = t0),
+                sig(5000, source = "cmb.pb", time = t0 + CrossChannelDedup.SAME_BANK_WINDOW_MS),
+            ),
+        )
     }
 }

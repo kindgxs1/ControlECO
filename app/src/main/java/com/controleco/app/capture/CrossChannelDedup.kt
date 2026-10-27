@@ -109,6 +109,41 @@ internal object CrossChannelDedup {
             abs(existing.time - incoming.time) <= WINDOW_MS
     }
 
+    /** 同一家银行多通道（短信 / App 推送 / App 页面）重复线索的归并窗口 */
+    const val SAME_BANK_WINDOW_MS = 90_000L
+
+    /**
+     * 来源对应的标准银行名（纯函数）：银行短信 `SMS:银行名` / 银行 App 包名 → 标准名；
+     * 其它来源（支付渠道、电商页面）→ null。
+     */
+    fun bankNameOfSource(source: String): String? {
+        if (!isBankLedgerSide(source)) return null
+        if (source.startsWith(NotificationRules.SMS_SOURCE_PREFIX)) {
+            val name = source.removePrefix(NotificationRules.SMS_SOURCE_PREFIX).trim()
+            return BankLedgerRules.detectBankName(name) ?: name.takeIf { it.isNotBlank() }
+        }
+        return BankLedgerRules.bankNameOfPackage(source)
+    }
+
+    /**
+     * 同一家银行的**不同通道**（短信 ⇄ App 推送 ⇄ App 页面）是否在描述同一笔动账
+     * （2026-10-27 用户规则：「同银行短信/推送/页面去重」）。
+     *
+     * 与 [isSameTransaction] 严格分开——后者只做「支付渠道 ⇄ 银行」，且两家银行之间不并
+     * （单测锁定该口径）。这里只认同一家银行、且**来源键不同**：
+     * 同一通道内同额的两条（两次真实消费）不并，避免把两笔真实交易合成一笔。
+     */
+    fun isSameBankTransaction(existing: Signature, incoming: Signature): Boolean {
+        val existingBank = bankNameOfSource(existing.source) ?: return false
+        val incomingBank = bankNameOfSource(incoming.source) ?: return false
+        if (existingBank != incomingBank) return false
+        if (existing.source == incoming.source) return false
+        return existing.type == incoming.type &&
+            existing.isRefund == incoming.isRefund &&
+            existing.amountCents == incoming.amountCents &&
+            abs(existing.time - incoming.time) <= SAME_BANK_WINDOW_MS
+    }
+
     /**
      * 支付类条目是否带有可核对的银行线索（银行名/卡尾号）。
      *

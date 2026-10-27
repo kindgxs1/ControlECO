@@ -124,7 +124,7 @@ private const val PAGE_ROWS = 30
 private const val MIN_THUMB_FRACTION = 0.12f
 private const val MAX_THUMB_FRACTION = 0.9f
 
-private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
 /** 账单行文案：标题 + 小行第一行 + 备注行（备注为空时不占位） */
 internal data class BillRowText(val title: String, val subLine1: String, val note: String)

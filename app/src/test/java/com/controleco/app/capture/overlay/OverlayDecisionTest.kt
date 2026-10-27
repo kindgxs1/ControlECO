@@ -259,3 +259,31 @@ class OverlayDismissOutcomeTest {
         assertFalse(snapshot().edited)
     }
 }
+
+/**
+ * 「已记入 · 撤销」细条的停留时长：默认 6 秒，设置里可选 3/6/10/15/30 秒；
+ * 异常值（0、负值、特别大）回落到默认，避免细条瞬间收掉或一直挂着。
+ */
+class SavedStripDismissTest {
+
+    @Test
+    fun `默认时长在可选项里`() {
+        assertEquals(6_000L, SAVED_STRIP_DISMISS_MS)
+        assertTrue(SAVED_STRIP_DISMISS_MS in SAVED_STRIP_DISMISS_OPTIONS_MS)
+    }
+
+    @Test
+    fun `可选项都原样保留`() {
+        SAVED_STRIP_DISMISS_OPTIONS_MS.forEach { ms ->
+            assertEquals(ms, clampSavedStripDismissMs(ms))
+        }
+    }
+
+    @Test
+    fun `异常值回落到默认`() {
+        assertEquals(SAVED_STRIP_DISMISS_MS, clampSavedStripDismissMs(0L))
+        assertEquals(SAVED_STRIP_DISMISS_MS, clampSavedStripDismissMs(-1L))
+        assertEquals(SAVED_STRIP_DISMISS_MS, clampSavedStripDismissMs(999L))
+        assertEquals(SAVED_STRIP_DISMISS_MS, clampSavedStripDismissMs(60_001L))
+    }
+}
