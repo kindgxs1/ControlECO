@@ -79,6 +79,7 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.flow.drop
 
 /**
  * 记账 / 编辑记录两页共用的表单件（只在 ui/transactions 内使用）。
@@ -464,25 +465,32 @@ private fun TxTimeWheelDialog(
                 )
 
                 Spacer(Modifier.height(16.dp))
+                // EcoGhostButton / EcoPrimaryButton 内部固定 fillMaxWidth，直接放进 Row 会各自占满整行、
+                // 把「取消 / 确定」挤出窗口（表现为"只有清空按钮、没有确定"）。用 weight 容器限宽。
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    EcoGhostButton(
-                        text = "清空",
-                        onClick = onClear,
-                        height = 38.dp,
-                    )
-                    Spacer(Modifier.weight(1f))
-                    EcoGhostButton(
-                        text = "取消",
-                        onClick = onDismiss,
-                        height = 38.dp,
-                    )
+                    Box(Modifier.weight(1f)) {
+                        EcoGhostButton(
+                            text = "清空",
+                            onClick = onClear,
+                            height = 38.dp,
+                        )
+                    }
                     Spacer(Modifier.width(8.dp))
-                    EcoPrimaryButton(
-                        text = "确定",
-                        onClick = { onConfirm(LocalTime.of(hour, minute, second)) },
-                        height = 38.dp,
-                        modifier = Modifier.width(88.dp),
-                    )
+                    Box(Modifier.weight(1f)) {
+                        EcoGhostButton(
+                            text = "取消",
+                            onClick = onDismiss,
+                            height = 38.dp,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Box(Modifier.weight(1.2f)) {
+                        EcoPrimaryButton(
+                            text = "确定",
+                            onClick = { onConfirm(LocalTime.of(hour, minute, second)) },
+                            height = 38.dp,
+                        )
+                    }
                 }
             }
         }
@@ -511,13 +519,19 @@ private fun TimeWheelColumn(
     visibleRows: Int = 3,
 ) {
     val c = MaterialTheme.eco
-    val listState = rememberLazyListState()
+    // 初始位置直接落在选中项上（contentPadding 让它居中），避免打开面板时从 0 慢慢滚过去
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = selectedIndex.coerceIn(0, items.lastIndex),
+    )
     val fling = rememberSnapFlingBehavior(listState)
     val pad = visibleRows / 2
 
-    // 外部值变化（含手动输入）→ 滚轮跟随；用户自己滑到该位置时不重复滚动
+    // contentPadding 的上下各留 pad 行：滚到第 i 项时，i 正好落在**中间**一行
+    // （顶部 padding 把 i 推到中心，i-1 显示在上排、i+1 显示在下排）。
+    // 所以"选中值居中" = firstVisibleItemIndex == selectedIndex，不能再加 pad，
+    // 否则中间的永远是 selected 的下一项（选中的数字反而停在上排）。
     LaunchedEffect(selectedIndex) {
-        val target = (selectedIndex + pad).coerceIn(0, items.size - 1)
+        val target = selectedIndex.coerceIn(0, items.lastIndex)
         if (listState.firstVisibleItemIndex != target) {
             listState.animateScrollToItem(target)
         }
@@ -525,13 +539,16 @@ private fun TimeWheelColumn(
 
     val latestIndex by rememberUpdatedState(selectedIndex)
     val latestOnSelected by rememberUpdatedState(onSelected)
-    // 只在滚动停止时上报，避免滚动过程中每帧回调造成父级频繁重组
+    // 只在滚动停止时上报；首帧的 false 要丢掉，否则打开面板的瞬间会把选中项报成 0
     LaunchedEffect(listState) {
-        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
-            if (scrolling) return@collect
-            val v = (listState.firstVisibleItemIndex - pad).coerceIn(0, items.lastIndex)
-            if (v != latestIndex) latestOnSelected(v)
-        }
+        snapshotFlow { listState.isScrollInProgress }
+            .drop(1)
+            .collect { scrolling ->
+                if (scrolling) return@collect
+                // 停止后中间一行就是 firstVisibleItemIndex（见上）
+                val v = listState.firstVisibleItemIndex.coerceIn(0, items.lastIndex)
+                if (v != latestIndex) latestOnSelected(v)
+            }
     }
 
     Box(modifier.height(itemHeight * visibleRows)) {

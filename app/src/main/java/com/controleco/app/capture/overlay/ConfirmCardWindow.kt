@@ -182,17 +182,43 @@ internal object ConfirmCardWindow {
     /** 确认入账后的非阻塞细条：**屏幕顶端**小条 + 撤销按钮，停留时长可在设置里调 */
     fun showSaved(type: TxType, amountCents: Long, onUndo: () -> Unit) {
         if (!this::appContext.isInitialized) return
+        showTopStrip(
+            text = "已记入 " + (if (type == TxType.EXPENSE) "支出 " else "收入 ") + Money.formatYuan(amountCents),
+            actionLabel = "撤销",
+            durationMs = savedStripDismissMs(appContext),
+            onClick = onUndo,
+        )
+    }
+
+    /**
+     * 待确认细条：确认卡没能弹出来时的**可视兜底**。
+     * 不依赖通知权限，只在屏幕顶端占一行；点「处理」= 直接在应用内弹出确认卡。
+     */
+    fun showPending(type: TxType, amountCents: Long, counterparty: String, onClick: () -> Unit) {
+        if (!this::appContext.isInitialized) return
+        val who = counterparty.trim().take(12)
+        showTopStrip(
+            text = "待确认 " + (if (type == TxType.EXPENSE) "支出 " else "收入 ") + Money.formatYuan(amountCents) +
+                (if (who.isNotEmpty()) " · $who" else ""),
+            actionLabel = "处理",
+            durationMs = PENDING_STRIP_DISMISS_MS,
+            onClick = onClick,
+        )
+    }
+
+    /** 顶端细条通用实现（已记入 · 撤销 / 待确认 · 处理 共用同一套窗口与计时） */
+    private fun showTopStrip(text: String, actionLabel: String, durationMs: Long, onClick: () -> Unit) {
         removeSavedWindow()
-        val dismissMs = savedStripDismissMs(appContext)
 
         val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val host = OverlayComposeHost()
         val view = buildOverlayComposeView(appContext, host) {
             SavedStripContent(
-                text = "已记入 " + (if (type == TxType.EXPENSE) "支出 " else "收入 ") + Money.formatYuan(amountCents),
-                durationMs = dismissMs,
+                text = text,
+                durationMs = durationMs,
+                actionLabel = actionLabel,
                 onUndo = {
-                    onUndo()
+                    onClick()
                     removeSavedWindow()
                 },
             )
@@ -222,10 +248,10 @@ internal object ConfirmCardWindow {
             savedHost = host
             val r = Runnable { removeSavedWindow() }
             savedDismiss = r
-            if (dismissMs > 0L) handler.postDelayed(r, dismissMs)
-            AppLog.i(TAG, "saved strip shown")
+            if (durationMs > 0L) handler.postDelayed(r, durationMs)
+            AppLog.i(TAG, "top strip shown: $actionLabel")
         }.onFailure {
-            AppLog.w(TAG, "saved strip addView failed", it)
+            AppLog.w(TAG, "top strip addView failed", it)
             runCatching { host.destroy() }
         }
     }

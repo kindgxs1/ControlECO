@@ -1052,12 +1052,13 @@ private fun SubCategoryPanel(
     }
 }
 
-/** 「已记入 支出 ¥20.06 · 撤销」细条（非阻塞，屏幕顶端悬浮，[durationMs] 后自动消失） */
+/** 顶端细条（非阻塞，[durationMs] 后自动消失）：已记入 · 撤销 / 待确认 · 处理 共用 */
 @Composable
 internal fun SavedStripContent(
     text: String,
     onUndo: () -> Unit,
     durationMs: Long = SAVED_STRIP_DISMISS_MS,
+    actionLabel: String = "撤销",
 ) {
     val c = MaterialTheme.eco
     val progress = remember { Animatable(0f) }
@@ -1102,7 +1103,7 @@ internal fun SavedStripContent(
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.width(6.dp))
-            EcoTextAction(text = "撤销", onClick = onUndo, color = c.blue)
+            EcoTextAction(text = actionLabel, onClick = onUndo, color = c.blue)
         }
         // 与原型一致：底部 2dp 细进度条，按窗口的自动收起时长走完
         Box(

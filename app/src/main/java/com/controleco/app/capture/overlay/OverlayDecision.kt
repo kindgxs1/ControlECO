@@ -19,6 +19,12 @@ internal const val OVERLAY_AUTO_DISMISS_MS = 60_000L
 /** 确认后的「已记入 · 撤销」细条默认停留时长（可在设置 → 记账里调整） */
 internal const val SAVED_STRIP_DISMISS_MS = 6_000L
 
+/**
+ * 「待确认 · 处理」细条的停留时长：卡片没弹出来时的可视兜底。
+ * 比已记入细条长一些——用户需要时间看到并点开处理。
+ */
+internal const val PENDING_STRIP_DISMISS_MS = 10_000L
+
 /** 细条停留时长的偏好键（毫秒；与 CaptureCenter 共用同一个 settings 偏好文件） */
 internal const val KEY_SAVED_STRIP_DISMISS_MS = "saved_strip_dismiss_ms"
 
