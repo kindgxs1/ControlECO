@@ -437,13 +437,13 @@ data class CategoryMappingEntity(
     /** 账单来源：WECHAT / ALIPAY（留空 = 所有来源通用，优先级低于精确来源） */
     val source: String = "",
     /** 匹配类型：CATEGORY（账单自带"交易分类"）/ TRADE_TYPE（账单自带"交易类型"） */
-    val matchType: String,
+    val matchType: String = "CATEGORY",
     /** 匹配值（账单里原封不动的字段值，匹配时做 trim + 忽略大小写） */
-    val matchValue: String,
+    val matchValue: String = "",
     /** 这条规则对应的收支方向（EXPENSE / INCOME），用于匹配时过滤 */
-    val txType: TxType,
+    val txType: TxType = TxType.EXPENSE,
     /** 映射到软件内的分类 id（CategoryEntity.id），一级或二级均可 */
-    val targetCategoryId: Long,
+    val targetCategoryId: Long = 0L,
     val note: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),

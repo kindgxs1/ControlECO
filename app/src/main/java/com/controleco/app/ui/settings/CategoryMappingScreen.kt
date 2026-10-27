@@ -58,13 +58,16 @@ import com.controleco.app.ui.theme.eco
  *
  * 每条规则 = 账单来源（可通用）+ 匹配类型（分类名 / 交易类型）+ 匹配值 + 收支方向 → 软件内分类。
  * 导入时先查此表，命中则用映射的分类 id；不命中再按分类名匹配兜底。
+ *
+ * 点击列表项可编辑；规则按（来源 + 匹配类型 + 匹配值）唯一，保存时幂等覆盖。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CategoryMappingScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     val mappings by vm.categoryMappings.collectAsStateWithLifecycle()
     val categories by vm.categories.collectAsStateWithLifecycle()
-    var showAdd by remember { mutableStateOf(false) }
+    // editingRule == null → 新增；editingRule != null → 编辑
+    var editingRule by remember { mutableStateOf<CategoryMappingEntity?>(null) }
     var showDeleteId by remember { mutableStateOf<Long?>(null) }
 
     Column(Modifier.fillMaxSize()) {
@@ -78,18 +81,29 @@ fun CategoryMappingScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             EcoPrimaryButton(
                 text = "添加规则",
                 leading = EcoIcons.Plus,
-                onClick = { showAdd = true },
+                onClick = { editingRule = CategoryMappingEntity() },
                 modifier = Modifier.padding(end = 0.dp),
                 height = 38.dp,
             )
         }
         if (mappings.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                EcoEmpty(
-                    title = "暂无映射规则",
-                    body = "默认按账单自带的分类名匹配软件内同名分类。添加规则可让导入自动命中软件内的对应分类（一级或二级均可）。",
-                    icon = EcoIcons.Tag,
-                )
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(horizontal = 28.dp),
+                ) {
+                    EcoEmpty(
+                        title = "暂无映射规则",
+                        body = "默认按账单自带的分类名匹配软件内同名分类。\n添加规则可让导入自动命中软件内的对应分类（一级或二级均可）。",
+                        icon = EcoIcons.Tag,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    EcoPrimaryButton(
+                        text = "添加第一条规则",
+                        onClick = { editingRule = CategoryMappingEntity() },
+                        height = 42.dp,
+                    )
+                }
             }
         } else {
             LazyColumn(
@@ -97,12 +111,13 @@ fun CategoryMappingScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(6.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(18.dp),
             ) {
-                item { EcoPageNote("导入命中时优先用本表，不命中再按分类名匹配；规则按（来源 + 匹配类型 + 匹配值）唯一。") }
+                item { EcoPageNote("导入命中时优先用本表，不命中再按分类名匹配；规则按（来源 + 匹配类型 + 匹配值）唯一。点击规则可编辑。") }
                 items(mappings, key = { it.id }) { rule ->
                     MappingRow(
                         rule = rule,
                         category = categories.firstOrNull { it.id == rule.targetCategoryId },
                         allCategories = categories,
+                        onClick = { editingRule = rule },
                         onDelete = { showDeleteId = rule.id },
                     )
                 }
@@ -110,16 +125,16 @@ fun CategoryMappingScreen(vm: LedgerViewModel, onBack: () -> Unit) {
         }
     }
 
-    if (showAdd) {
+    if (editingRule != null) {
         MappingRuleEditor(
             categories = categories,
-            initial = null,
+            initial = editingRule,
             onSave = { rule ->
                 vm.upsertCategoryMapping(rule)
-                showAdd = false
-                EcoToast.show("已添加")
+                editingRule = null
+                EcoToast.show(if (rule.id > 0) "已保存修改" else "已添加")
             },
-            onDismiss = { showAdd = false },
+            onDismiss = { editingRule = null },
         )
     }
     val deleteId = showDeleteId
@@ -143,14 +158,20 @@ private fun MappingRow(
     rule: CategoryMappingEntity,
     category: CategoryEntity?,
     allCategories: List<CategoryEntity>,
+    onClick: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val c = MaterialTheme.eco
-    EcoPane(Modifier.fillMaxWidth()) {
+    EcoPane(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable { onClick() },
+    ) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
+                .clip(RoundedCornerShape(14.dp))
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -279,7 +300,7 @@ private fun MappingRuleEditor(
             EcoField(
                 label = "匹配值",
                 value = matchValue,
-                onValueChange = { matchValue = it },
+                onValueChange = { matchValue = it; error = null },
                 placeholder = "例如：服饰美容 / 餐饮美食",
                 minHeight = 38.dp,
             )
@@ -332,33 +353,30 @@ private fun MappingRuleEditor(
                 TextButton(onClick = onDismiss) { Text("取消") }
                 Spacer(Modifier.width(8.dp))
                 EcoPrimaryButton(
-                    text = "保存",
+                    text = if (initial != null && initial.id > 0) "保存修改" else "保存",
                     onClick = {
                         val v = matchValue.trim()
                         when {
                             v.isBlank() -> error = "匹配值不能为空"
                             targetCategoryId == 0L -> error = "请选择目标分类"
                             else -> {
+                                // 编辑模式保留原 id + createdAt；新增时走 autoGenerate
+                                val base = initial?.takeIf { it.id > 0 } ?: CategoryMappingEntity()
                                 onSave(
-                                    (initial ?: CategoryMappingEntity(
-                                        source = source,
-                                        matchType = matchType,
-                                        matchValue = v,
-                                        txType = txType,
-                                        targetCategoryId = targetCategoryId,
-                                    )).copy(
+                                    base.copy(
                                         source = source,
                                         matchType = matchType,
                                         matchValue = v,
                                         txType = txType,
                                         targetCategoryId = targetCategoryId,
                                         note = note.trim(),
+                                        updatedAt = System.currentTimeMillis(),
                                     ),
                                 )
                             }
                         }
                     },
-                    modifier = Modifier.width(120.dp),
+                    modifier = Modifier.width(140.dp),
                     height = 40.dp,
                 )
             }

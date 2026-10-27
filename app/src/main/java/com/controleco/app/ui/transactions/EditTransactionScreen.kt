@@ -85,8 +85,8 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
     var categoryId by remember { mutableStateOf<Long?>(null) }
     var accountId by remember { mutableStateOf<Long?>(null) }
     var date by remember { mutableStateOf(LocalDate.now()) }
-    // 编辑时保留原记录的时分（改日期不该把时间抹成 00:00）
-    var timeOfDay by remember { mutableStateOf(LocalTime.now()) }
+    // 手动时间：null = 留空使用当前时刻（编辑时默认回填原时分，点击"清空"可回到当前时刻）
+    var manualTime by remember { mutableStateOf<LocalTime?>(null) }
     var counterparty by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
     var excludeFromAssets by remember { mutableStateOf(false) }
@@ -103,7 +103,7 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
             accountId = t.accountId
             val local = Instant.ofEpochMilli(t.timestamp).atZone(ZoneId.systemDefault())
             date = local.toLocalDate()
-            timeOfDay = local.toLocalTime()
+            manualTime = local.toLocalTime()
             counterparty = t.counterparty
             note = t.note
             excludeFromAssets = t.excludeFromAssets
@@ -138,8 +138,12 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
             categoryId == null -> error = "请选择分类"
             accountId == null -> error = "请选择账户"
             else -> {
-                val ts = LocalDateTime.of(date, timeOfDay)
-                    .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                val zone = ZoneId.systemDefault()
+                val ts = when {
+                    manualTime != null -> date.atTime(manualTime!!).atZone(zone).toInstant().toEpochMilli()
+                    date == LocalDate.now() -> System.currentTimeMillis()
+                    else -> date.atTime(LocalTime.now()).atZone(zone).toInstant().toEpochMilli()
+                }
                 vm.saveTransaction(
                     txId, type, value, categoryId!!, accountId!!, ts, note.trim(), counterparty.trim(),
                     excludeFromAssets, countInStats,
@@ -296,6 +300,13 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
                     label = "日期",
                 )
             }
+            Spacer(Modifier.height(8.dp))
+            TxTimeField(
+                time = manualTime,
+                onPick = { manualTime = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = "时间（留空=当前时刻）",
+            )
 
             Spacer(Modifier.height(15.dp))
             TxSectionLabel("商户与备注")
