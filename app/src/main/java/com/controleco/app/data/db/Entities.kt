@@ -418,3 +418,33 @@ data class PendingTransactionEntity(
     val status: PendingStatus = PendingStatus.PENDING,
     val createdAt: Long = System.currentTimeMillis(),
 )
+
+/**
+ * 账单导入的分类映射规则：
+ * 把微信/支付宝账单里自带的「交易分类」或「交易类型」字段，
+ * 映射到软件内自己的分类（一级或二级都行，存 CategoryEntity.id）。
+ * 导入时先按此表查映射，命中则用映射的分类 id，不命中再按名字匹配兜底。
+ *
+ * 每条规则是「账单来源 + 匹配类型 + 匹配值」三要素唯一确定的一条映射，
+ * 允许覆盖同一条（按 (source, matchType, matchValue) 做唯一约束）。
+ */
+@Entity(
+    tableName = "category_mappings",
+    indices = [Index(value = ["source", "matchType", "matchValue"], unique = true)],
+)
+data class CategoryMappingEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    /** 账单来源：WECHAT / ALIPAY（留空 = 所有来源通用，优先级低于精确来源） */
+    val source: String = "",
+    /** 匹配类型：CATEGORY（账单自带"交易分类"）/ TRADE_TYPE（账单自带"交易类型"） */
+    val matchType: String,
+    /** 匹配值（账单里原封不动的字段值，匹配时做 trim + 忽略大小写） */
+    val matchValue: String,
+    /** 这条规则对应的收支方向（EXPENSE / INCOME），用于匹配时过滤 */
+    val txType: TxType,
+    /** 映射到软件内的分类 id（CategoryEntity.id），一级或二级均可 */
+    val targetCategoryId: Long,
+    val note: String = "",
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+)

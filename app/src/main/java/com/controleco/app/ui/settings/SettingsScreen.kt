@@ -99,6 +99,7 @@ fun SettingsScreen(
     onOpenKeepAlive: () -> Unit,
     onOpenDeveloper: () -> Unit,
     onOpenAbout: () -> Unit,
+    onOpenCategoryMappings: () -> Unit,
 ) {
     LaunchedEffect(Unit) { AppLog.i("settings", "hub opened") }
 
@@ -248,6 +249,15 @@ fun SettingsScreen(
                     depositStartDraft = depositStart ?: YearMonth.now()
                     showDepositStart = true
                 },
+            )
+            SettingsDivider()
+            SettingsRow(
+                title = "账单分类映射规则",
+                subtitle = "把微信/支付宝账单自带分类/交易类型映射到软件内分类；导入时优先查此规则",
+                icon = EcoIcons.Tag,
+                iconTint = MaterialTheme.eco.clay,
+                showChevron = true,
+                onClick = onOpenCategoryMappings,
             )
             // 微信/支付宝账单导入已移到「备份还原」页 →「导入还原」下方
         }

@@ -18,8 +18,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MerchantRuleEntity::class,
         InstallmentPlanEntity::class,
         RecurringPlanEntity::class,
+        CategoryMappingEntity::class,
     ],
-    version = 19,
+    version = 21,
     exportSchema = true,
 )
 abstract class AccBookDatabase : RoomDatabase() {
@@ -32,6 +33,7 @@ abstract class AccBookDatabase : RoomDatabase() {
     abstract fun traceDao(): TraceDao
     abstract fun merchantRuleDao(): MerchantRuleDao
     abstract fun planDao(): PlanDao
+    abstract fun categoryMappingDao(): CategoryMappingDao
 
     companion object {
         /** v2：交易表新增退款标记列 */
@@ -404,6 +406,45 @@ abstract class AccBookDatabase : RoomDatabase() {
             }
         }
 
+        /** v20：默认收入分类补充 AA / 报销（可关联原支出的关联收入分类） */
+        private val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                fun ensureIncome(name: String, sortOrder: Int) {
+                    db.execSQL(
+                        """INSERT INTO categories (name, type, sortOrder, icon, parentId)
+                           SELECT '$name', 'INCOME', $sortOrder, '', NULL
+                           WHERE NOT EXISTS (
+                               SELECT 1 FROM categories WHERE type = 'INCOME' AND name = '$name'
+                           )""",
+                    )
+                }
+                // 退款在 v11 已补；AA / 报销在 v20 补，避免老用户升级后无法创建关联分类
+                ensureIncome(AACategory.NAME, 5)
+                ensureIncome(ReimbursementCategory.NAME, 6)
+            }
+        }
+
+        /** v21：账单导入分类映射表（category_mappings）——把微信/支付宝账单自带分类 / 交易类型
+         *  映射到软件内的分类 id，导入时优先查映射，不命中再按分类名匹配兜底 */
+        private val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS category_mappings (
+                       id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                       source TEXT NOT NULL DEFAULT '',
+                       matchType TEXT NOT NULL,
+                       matchValue TEXT NOT NULL,
+                       txType TEXT NOT NULL,
+                       targetCategoryId INTEGER NOT NULL,
+                       note TEXT NOT NULL DEFAULT '',
+                       createdAt INTEGER NOT NULL,
+                       updatedAt INTEGER NOT NULL,
+                       UNIQUE(source, matchType, matchValue)
+                    )""",
+                )
+            }
+        }
+
         @Volatile
         private var instance: AccBookDatabase? = null
 
@@ -419,6 +460,7 @@ abstract class AccBookDatabase : RoomDatabase() {
                         MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
                         MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15,
                         MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19,
+                        MIGRATION_19_20, MIGRATION_20_21,
                     )
                     .build().also { instance = it }
             }
@@ -434,7 +476,7 @@ object DefaultData {
         listOf("餐饮", "交通", "购物", "日用", "居住", "娱乐", "医疗", "其他")
 
     /** 收入分类：「退款」固定排在「其他」之前（退款是常规收入项，其他是兜底项） */
-    val defaultIncomeCategories = listOf("工资", "理财", "红包", RefundCategory.NAME, "其他")
+    val defaultIncomeCategories = listOf("工资", "理财", "红包", RefundCategory.NAME, AACategory.NAME, ReimbursementCategory.NAME, "其他")
 
     suspend fun seedIfNeeded(db: AccBookDatabase) {
         if (db.accountDao().countAll() == 0) {

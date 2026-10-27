@@ -63,7 +63,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.data.CategoryTree
 import com.controleco.app.data.db.CategoryEntity
+import com.controleco.app.data.db.AACategory
+import com.controleco.app.data.db.ReimbursementCategory
 import com.controleco.app.data.db.RefundCategory
+import com.controleco.app.data.db.RefundMark
 import com.controleco.app.data.db.TransactionRow
 import com.controleco.app.data.db.TxType
 import com.controleco.app.ui.common.EcoIcons
@@ -112,6 +115,7 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     var note by remember { mutableStateOf("") }
     var excludeFromAssets by remember { mutableStateOf(false) }
     var countInStats by remember { mutableStateOf(true) }
+    var manualTime by remember { mutableStateOf<LocalTime?>(null) }
     var linkRefund by remember { mutableStateOf(false) }
     var linkedExpense by remember { mutableStateOf<TransactionRow?>(null) }
     var linkSheetOpen by remember { mutableStateOf(false) }
@@ -172,18 +176,12 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
         categoryId == null -> 1
         else -> 2
     }
-    // 只有「收入 → 退款」这一笔才需要手动关联原支出（退款与支出按差额统计）
-    val refundCategoryId = remember(categories) {
-        categories.firstOrNull { it.type == TxType.INCOME && it.name == RefundCategory.NAME }?.id
-    }
-    val isRefundIncome = type == TxType.INCOME && selectedCategory?.let { category ->
-        category.id == refundCategoryId ||
-            (refundCategoryId != null && category.parentId == refundCategoryId)
-    } == true
+    // 关联收入的三种类型：退款 / AA / 报销 —— 定义移到文件末尾（不能在 composable 内定义接口）
+    val linkedIncomeKind = findLinkedIncomeKind(categories, type, categoryId)
 
-    // 切走退款分类时收起关联选项，避免把关联状态带到别的记账上
-    LaunchedEffect(isRefundIncome) {
-        if (!isRefundIncome) {
+    // 切走可关联收入分类时收起关联选项，避免把关联状态带到别的记账上
+    LaunchedEffect(linkedIncomeKind) {
+        if (linkedIncomeKind == null) {
             linkRefund = false
             linkedExpense = null
             linkSheetOpen = false
@@ -208,20 +206,27 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             amount == null || amount <= 0L -> error = "请输入有效金额"
             categoryId == null -> error = "请选择分类"
             accountId == null -> error = "请选择账户"
-            isRefundIncome && linkRefund && linkedExpense == null -> error = "请选择要关联的原支出"
+            linkedIncomeKind != null && linkRefund && linkedExpense == null -> error = "请选择要关联的原支出"
             else -> {
-                // 手动记账：默认记的是"现在"（含时分），选了别的日期则沿用当前时刻
+                // 手动记账：默认记的是"现在"（含时分），留空时间则沿用当前时刻
                 val zone = ZoneId.systemDefault()
-                val ts = if (date == LocalDate.now()) {
+                val ts = if (manualTime != null) {
+                    date.atTime(manualTime!!).atZone(zone).toInstant().toEpochMilli()
+                } else if (date == LocalDate.now()) {
                     System.currentTimeMillis()
                 } else {
                     date.atTime(LocalTime.now()).atZone(zone).toInstant().toEpochMilli()
                 }
                 saving = true
                 val expense = linkedExpense
-                if (isRefundIncome && linkRefund && expense != null) {
-                    // 关联路径：等落库结果再离页，失败留在本页并给出原因
-                    vm.saveLinkedRefundIncome(
+                if (linkedIncomeKind != null && linkRefund && expense != null) {
+                    // 关联路径：退款 / AA / 报销 收入用同一个 saveLinkedIncomeAgainstExpense
+                    // 退款保留 REFUND_INCOME 标记（待确认自动匹配仍需要），AA/报销用 NONE
+                    val mark = when (linkedIncomeKind) {
+                        is RefundKind -> RefundMark.REFUND_INCOME
+                        else -> RefundMark.NONE
+                    }
+                    vm.saveLinkedIncomeAgainstExpense(
                         amountCents = amount,
                         categoryId = categoryId!!,
                         accountId = accountId!!,
@@ -231,6 +236,7 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                         expenseId = expense.id,
                         excludeFromAssets = excludeFromAssets,
                         countInStats = countInStats,
+                        refundMark = mark,
                         onDone = { err ->
                             saving = false
                             if (err == null) {
@@ -328,6 +334,14 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                             height = 34.dp,
                             radius = 9.dp,
                         )
+                        TxTimeField(
+                            time = manualTime,
+                            onPick = { manualTime = it },
+                            modifier = Modifier.weight(1f),
+                            label = "时间",
+                            height = 34.dp,
+                            radius = 9.dp,
+                        )
                     }
                     Spacer(Modifier.height(8.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -364,12 +378,11 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                         checked = countInStats,
                         onCheckedChange = { countInStats = it },
                     )
-                    if (isRefundIncome) {
+                    if (linkedIncomeKind != null) {
                         Spacer(Modifier.height(6.dp))
-                        // 手动记的退款可以指定被退款的原支出：关联后按差额统计（支持部分退款）
                         TxSwitchField(
-                            label = "关联退款账单",
-                            subtitle = "开启后手动选择被退款的原支出，退款与支出按差额统计",
+                            label = linkedIncomeKind.switchLabel,
+                            subtitle = linkedIncomeKind.switchSubtitle,
                             checked = linkRefund,
                             onCheckedChange = {
                                 linkRefund = it
@@ -427,10 +440,11 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     // 关联原支出：列出近 60 天未退款的支出，选中即绑定（落库在「记一笔」时完成）
     if (linkSheetOpen) {
         val current = linkedExpense
+        val kind = linkedIncomeKind
         EcoSheet(
             onDismiss = { linkSheetOpen = false },
-            title = "关联退款账单",
-            subtitle = "选择这笔退款对应的支出，退款与支出按差额统计",
+            title = kind?.sheetTitle ?: "关联账单",
+            subtitle = kind?.sheetSubtitle ?: "选择要关联的原支出",
         ) {
             Column {
                 when {
@@ -469,17 +483,18 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                         }
                     }
                 }
-                EcoPageNote("仅显示近 60 天、未退款的支出；退款小于支出时只计差额，退款大于支出时超出部分计入收入。")
+                EcoPageNote(kind?.sheetNote ?: "")
             }
         }
     }
 }
 
-/** 关联账单选择行：未选时提示「选择被退款的原支出」，已选时显示商户 / 日期 / 金额 */
+/** 关联账单选择行：未选时提示 [placeholder]，已选时显示商户 / 日期 / 金额 */
 @Composable
 private fun LinkedExpenseField(
     expense: TransactionRow?,
     onClick: () -> Unit,
+    placeholder: String = "选择要关联的原支出",
 ) {
     val c = MaterialTheme.eco
     val shape = RoundedCornerShape(9.dp)
@@ -501,7 +516,7 @@ private fun LinkedExpenseField(
                 text = expense?.let {
                     val merchant = it.counterparty.ifBlank { it.categoryName }
                     "$merchant · ${linkedExpenseDate(it.timestamp)} · ${Money.formatYuan(it.amountCents)}"
-                } ?: "选择被退款的原支出",
+                } ?: placeholder,
                 style = EcoType.Input,
                 color = if (expense == null) c.quiet else c.ink,
                 maxLines = 1,
@@ -929,5 +944,68 @@ private fun DetailsToggle(expanded: Boolean, onToggle: () -> Unit) {
                 .size(13.dp)
                 .graphicsLayer { rotationZ = if (expanded) 90f else 0f },
         )
+    }
+}
+
+// ---------- 关联收入类型（顶层定义，QuickAddScreen 内与 QuickAddScreen.kt 外共享） ----------
+
+/**
+ * 可关联原支出的收入类型：退款 / AA / 报销 —— 都是收入条目、都可用 [refundLinkId] 字段
+ * 指向一条支出、统计时按差额抵扣。UI 文案和统计行为都由这个类型决定。
+ *
+ * 注意：DAOs.kt 已去掉 `refundMark = REFUND_INCOME` 的过滤，所有 `refundLinkId > 0` 的收入
+ * 都参与差额抵扣，这里只负责 UI 文案和保存时的 refundMark 选择。
+ */
+sealed interface LinkedIncomeKind {
+    val categoryName: String
+    val switchLabel: String
+    val switchSubtitle: String
+    val sheetTitle: String
+    val sheetSubtitle: String
+    val sheetNote: String
+}
+
+private data object RefundKind : LinkedIncomeKind {
+    override val categoryName = RefundCategory.NAME
+    override val switchLabel = "关联退款账单"
+    override val switchSubtitle = "开启后手动选择被退款的原支出，退款与支出按差额统计"
+    override val sheetTitle = "关联退款账单"
+    override val sheetSubtitle = "选择这笔退款对应的支出，退款与支出按差额统计"
+    override val sheetNote = "仅显示近 60 天、未退款的支出；退款小于支出时只计差额，退款大于支出时超出部分计入收入。"
+}
+
+private data object AAKind : LinkedIncomeKind {
+    override val categoryName = AACategory.NAME
+    override val switchLabel = "关联 AA 账单"
+    override val switchSubtitle = "开启后手动选择对应的聚餐支出，AA 收入与支出按差额统计"
+    override val sheetTitle = "关联 AA 账单"
+    override val sheetSubtitle = "选择这笔 AA 收入对应的支出，收入与支出按差额统计"
+    override val sheetNote = "仅显示近 60 天、未退款的支出；AA 收入小于支出时只计差额（实际自付），AA 收入大于支出时超出部分计入收入。"
+}
+
+private data object ReimburseKind : LinkedIncomeKind {
+    override val categoryName = ReimbursementCategory.NAME
+    override val switchLabel = "关联报销账单"
+    override val switchSubtitle = "开启后手动选择对应的垫付支出，报销收入与支出按差额统计"
+    override val sheetTitle = "关联报销账单"
+    override val sheetSubtitle = "选择这笔报销收入对应的支出，报销与支出按差额统计"
+    override val sheetNote = "仅显示近 60 天、未退款的支出；报销小于支出时只计差额，报销大于支出时超出部分计入收入。"
+}
+
+private fun findLinkedIncomeKind(
+    categories: List<com.controleco.app.data.db.CategoryEntity>,
+    type: com.controleco.app.data.db.TxType,
+    selectedId: Long?,
+): LinkedIncomeKind? {
+    if (type != com.controleco.app.data.db.TxType.INCOME) return null
+    if (selectedId == null) return null
+    val topId = categories.firstOrNull { it.id == selectedId }?.let { it.parentId ?: it.id }
+        ?: return null
+    val topName = categories.firstOrNull { it.id == topId }?.name ?: return null
+    return when (topName) {
+        RefundCategory.NAME -> RefundKind
+        AACategory.NAME -> AAKind
+        ReimbursementCategory.NAME -> ReimburseKind
+        else -> null
     }
 }

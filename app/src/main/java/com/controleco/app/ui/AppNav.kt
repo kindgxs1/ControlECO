@@ -65,6 +65,7 @@ import com.controleco.app.ui.settings.SettingsDeveloperScreen
 import com.controleco.app.ui.settings.SettingsImportScreen
 import com.controleco.app.ui.settings.SettingsPermissionScreen
 import com.controleco.app.ui.settings.SettingsMerchantRulesScreen
+import com.controleco.app.ui.settings.CategoryMappingScreen
 import com.controleco.app.ui.settings.SettingsScreen
 import com.controleco.app.ui.settings.SettingsWatchedAppsScreen
 import com.controleco.app.ui.eco.EcoBackdrop
@@ -253,6 +254,7 @@ fun AccBookNav(
                 onOpenKeepAlive = { navController.navigate("keepAlive") },
                 onOpenDeveloper = { navController.navigate("settings/developer") },
                 onOpenAbout = { navController.navigate("settings/about") },
+                onOpenCategoryMappings = { navController.navigate("settings/categoryMappings") },
             )
         }
         composable("settings/account") {
@@ -291,6 +293,9 @@ fun AccBookNav(
                 onOpenCaptureLog = { navController.navigate("captureLog") },
                 onOpenCaptureTrace = { navController.navigate("captureTrace") },
             )
+        }
+        composable("settings/categoryMappings") {
+            CategoryMappingScreen(vm = vm, onBack = { navController.popBackStack() })
         }
         composable("settings/about") {
             SettingsAboutScreen(onBack = { navController.popBackStack() })

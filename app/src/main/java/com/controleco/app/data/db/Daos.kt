@@ -91,7 +91,7 @@ interface TransactionDao {
            LEFT JOIN (
                SELECT refundLinkId, SUM(amountCents) AS totalRefundCents
                FROM transactions
-               WHERE refundLinkId > 0 AND type = 'INCOME' AND refundMark = 'REFUND_INCOME' AND countInStats = 1
+               WHERE refundLinkId > 0 AND type = 'INCOME' AND countInStats = 1
                GROUP BY refundLinkId
            ) r ON r.refundLinkId = t.id
            LEFT JOIN transactions e ON e.id = t.refundLinkId AND e.type = 'EXPENSE'
@@ -115,7 +115,7 @@ interface TransactionDao {
            LEFT JOIN (
                SELECT refundLinkId, SUM(amountCents) AS totalRefundCents
                FROM transactions
-               WHERE refundLinkId > 0 AND type = 'INCOME' AND refundMark = 'REFUND_INCOME' AND countInStats = 1
+               WHERE refundLinkId > 0 AND type = 'INCOME' AND countInStats = 1
                GROUP BY refundLinkId
            ) r ON r.refundLinkId = t.id
            WHERE t.timestamp >= :startMillis AND t.timestamp < :endMillis AND t.type = 'EXPENSE'
@@ -151,7 +151,7 @@ interface TransactionDao {
        LEFT JOIN (
            SELECT refundLinkId, SUM(amountCents) AS totalRefundCents
            FROM transactions
-           WHERE refundLinkId > 0 AND type = 'INCOME' AND refundMark = 'REFUND_INCOME' AND countInStats = 1
+           WHERE refundLinkId > 0 AND type = 'INCOME' AND countInStats = 1
            GROUP BY refundLinkId
        ) r ON r.refundLinkId = t.id
        WHERE t.timestamp >= :startMillis AND t.timestamp < :endMillis
@@ -175,7 +175,7 @@ interface TransactionDao {
        LEFT JOIN (
            SELECT refundLinkId, SUM(amountCents) AS totalRefundCents
            FROM transactions
-           WHERE refundLinkId > 0 AND type = 'INCOME' AND refundMark = 'REFUND_INCOME' AND countInStats = 1
+           WHERE refundLinkId > 0 AND type = 'INCOME' AND countInStats = 1
            GROUP BY refundLinkId
        ) r ON r.refundLinkId = t.id
        WHERE t.timestamp >= :startMillis AND t.timestamp < :endMillis
@@ -284,7 +284,7 @@ interface TransactionDao {
            LEFT JOIN (
                SELECT refundLinkId, SUM(amountCents) AS totalRefundCents
                FROM transactions
-               WHERE refundLinkId > 0 AND type = 'INCOME' AND refundMark = 'REFUND_INCOME' AND countInStats = 1
+               WHERE refundLinkId > 0 AND type = 'INCOME' AND countInStats = 1
                GROUP BY refundLinkId
            ) r ON r.refundLinkId = t.id
            LEFT JOIN transactions e ON e.id = t.refundLinkId AND e.type = 'EXPENSE'
@@ -316,7 +316,7 @@ interface TransactionDao {
            LEFT JOIN (
                SELECT refundLinkId, SUM(amountCents) AS totalRefundCents
                FROM transactions
-               WHERE refundLinkId > 0 AND type = 'INCOME' AND refundMark = 'REFUND_INCOME' AND countInStats = 1
+               WHERE refundLinkId > 0 AND type = 'INCOME' AND countInStats = 1
                GROUP BY refundLinkId
            ) r ON r.refundLinkId = t.id
            LEFT JOIN transactions e ON e.id = t.refundLinkId AND e.type = 'EXPENSE'
@@ -350,7 +350,7 @@ interface TransactionDao {
            LEFT JOIN (
                SELECT refundLinkId, SUM(amountCents) AS totalRefundCents
                FROM transactions
-               WHERE refundLinkId > 0 AND type = 'INCOME' AND refundMark = 'REFUND_INCOME' AND countInStats = 1
+               WHERE refundLinkId > 0 AND type = 'INCOME' AND countInStats = 1
                GROUP BY refundLinkId
            ) r ON r.refundLinkId = t.id
            LEFT JOIN transactions e ON e.id = t.refundLinkId AND e.type = 'EXPENSE'
@@ -379,7 +379,7 @@ interface TransactionDao {
     suspend fun markRefundAsIncome(refundId: Long)
 
     /** 把退款收入与原支出建立关联（ refundLinkId 指向 expenseId ） */
-    @Query("UPDATE transactions SET refundLinkId = :expenseId WHERE id = :refundId AND type = 'INCOME' AND refundMark = 'REFUND_INCOME'")
+    @Query("UPDATE transactions SET refundLinkId = :expenseId WHERE id = :refundId AND type = 'INCOME'")
     suspend fun linkRefund(refundId: Long, expenseId: Long)
 
     /** 解除退款收入的关联 */

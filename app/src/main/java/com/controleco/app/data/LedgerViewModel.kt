@@ -25,6 +25,8 @@ import com.controleco.app.data.db.CaptureChannel
 import com.controleco.app.data.db.CaptureTraceRow
 import com.controleco.app.data.db.CapturedNotificationEntity
 import com.controleco.app.data.db.CategoryEntity
+import com.controleco.app.data.db.CategoryMappingEntity
+import com.controleco.app.data.db.CategoryMatchType
 import com.controleco.app.data.db.CategorySumRow
 import com.controleco.app.data.db.InstallmentPlanEntity
 import com.controleco.app.data.db.PendingTransactionEntity
@@ -95,6 +97,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     private val txDao = db.transactionDao()
     private val accountDao = db.accountDao()
     private val categoryDao = db.categoryDao()
+    private val mappingDao = db.categoryMappingDao()
     private val pendingDao = db.pendingDao()
     private val captureDao = db.captureDao()
     private val traceDao = db.traceDao()
@@ -723,14 +726,18 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 手动记一笔「退款」并关联原支出：生成一条退款收入（REFUND_INCOME，
-     * `refundLinkId` 指向原支出），关联后支出与退款按差额统计。
+     * 手动记一笔「可关联原支出」的收入，并关联一条支出账单。
+     * 关联后支出与该收入按差额抵扣（支持部分退款 / 多笔 AA / 多笔报销）。
      *
-     * 与 [registerRefund] 的区别：那条路径会把原支出标「已退款」（全额退款），
-     * 这条路径保留原支出、只按差额抵扣，支持部分退款与多笔退款；也不写 `refundPending`，
-     * 不会出现在「待确认账单」里。
+     * 退款、AA 收款、报销到账三者的统计行为完全一致：收入条目 [refundLinkId] 指向原支出 id，
+     * Daos.kt 去掉了 `refundMark = REFUND_INCOME` 的过滤后，所有 `refundLinkId > 0` 的收入都参与差额抵扣。
+     * 三者唯一差别在 [refundMark]：退款仍保留 REFUND_INCOME（待确认退款的自动匹配专用条件），
+     * AA / 报销用 NONE（不是待确认那套流程）。
+     *
+     * 保留原函数名 [saveLinkedRefundIncome] 作为默认（REFUND_INCOME）调用点；
+     * AA / 报销场景直接传 [RefundMark.NONE]。
      */
-    fun saveLinkedRefundIncome(
+    fun saveLinkedIncomeAgainstExpense(
         amountCents: Long,
         categoryId: Long,
         accountId: Long,
@@ -740,6 +747,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         expenseId: Long,
         excludeFromAssets: Boolean = false,
         countInStats: Boolean = true,
+        refundMark: RefundMark = RefundMark.REFUND_INCOME,
         onDone: (String?) -> Unit,
     ) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -769,7 +777,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                         note = note,
                         counterparty = counterparty,
                         source = TxSource.MANUAL,
-                        refundMark = RefundMark.REFUND_INCOME,
+                        refundMark = refundMark,
                         refundPending = false,
                         excludeFromAssets = excludeFromAssets,
                         countInStats = countInStats,
@@ -777,15 +785,34 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                     ),
                 )
                 AppLog.i(
-                    "refund",
-                    "manual refund income linked to expense #$expenseId amount=${Money.formatYuan(amountCents)}",
+                    "tx",
+                    "manual linked income kind=${refundMark.name} linked to expense #$expenseId amount=${Money.formatYuan(amountCents)}",
                 )
                 withContext(Dispatchers.Main) { onDone(null) }
             } catch (e: Exception) {
-                AppLog.e("refund", "save linked refund income failed", e)
+                AppLog.e("tx", "save linked income failed", e)
                 withContext(Dispatchers.Main) { onDone("保存失败：${e.message ?: "未知错误"}") }
             }
         }
+    }
+
+    /** 向后兼容：原退款关联入口，等同于 [saveLinkedIncomeAgainstExpense] 的 refundMark=REFUND_INCOME */
+    fun saveLinkedRefundIncome(
+        amountCents: Long,
+        categoryId: Long,
+        accountId: Long,
+        timestamp: Long,
+        note: String,
+        counterparty: String,
+        expenseId: Long,
+        excludeFromAssets: Boolean = false,
+        countInStats: Boolean = true,
+        onDone: (String?) -> Unit,
+    ) {
+        saveLinkedIncomeAgainstExpense(
+            amountCents, categoryId, accountId, timestamp, note, counterparty,
+            expenseId, excludeFromAssets, countInStats, RefundMark.REFUND_INCOME, onDone,
+        )
     }
 
     fun deleteTransaction(id: Long, onResult: (String?) -> Unit) {
@@ -1348,6 +1375,10 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                 // 提交前再比对一次（解析到确认之间账本可能新增记录），只写入真正缺失的
                 val partition = BillDeduper.partition(bill.rows, existingForImport(bill))
                 val cats = categoryDao.getAll()
+                // 分类映射规则索引：(精确来源 + 通用 source="") 去重后以 txType|matchType|matchValue 为 key
+                val mappingIndex = (mappingDao.bySource(bill.source.name) + mappingDao.bySource(""))
+                    .distinctBy { "${it.txType.name}|${it.matchType}|${it.matchValue.trim().lowercase()}" }
+                    .associateBy { "${it.txType.name}|${it.matchType}|${it.matchValue.trim().lowercase()}" }
                 val entities = partition.newRows.map { row ->
                     // 账户按支付方式逐笔匹配（同一支付方式 → 同一账户）；未确认的用兜底账户
                     val accountId = accountByPayMethod[row.payMethod.trim()] ?: fallbackAccountId
@@ -1355,9 +1386,14 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                     val categoryId = (if (row.refundMark == RefundMark.REFUND_INCOME) {
                         RefundCategory.incomeCategoryId(cats)
                     } else {
-                        cats.firstOrNull { it.type == row.type && it.name == row.guessedCategoryName }
-                            ?.id
-                            ?: cats.firstOrNull { it.type == row.type && it.name == "其他" }?.id
+                        // 优先级 1：查分类映射规则（导入前用户已维护）——先精确来源 + txType，再通用 + txType
+                        val keyForCategory = "${row.type.name}|${CategoryMatchType.CATEGORY}|${row.guessedCategoryName.trim().lowercase()}"
+                        mappingIndex[keyForCategory]?.targetCategoryId
+                            ?: // 优先级 2：按分类名匹配（账单自带分类名在软件内存在则直接用）
+                            cats.firstOrNull { it.type == row.type && it.name == row.guessedCategoryName }
+                                ?.id
+                            ?: // 优先级 3：收入 AA/报销 关联支出的场景由用户手动记账处理，导入里不放宽
+                            cats.firstOrNull { it.type == row.type && it.name == "其他" }?.id
                             ?: cats.firstOrNull { it.type == row.type }?.id
                     })
                         ?: error("缺少${if (row.type == TxType.EXPENSE) "支出" else "收入"}分类，请先在分类管理中添加")
@@ -1532,6 +1568,30 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearMerchantRules() {
         viewModelScope.launch(Dispatchers.IO) { merchantRuleDao.clearAll() }
+    }
+
+    // ---------- 账单导入分类映射规则 ----------
+
+    val categoryMappings: StateFlow<List<CategoryMappingEntity>> =
+        mappingDao.observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun upsertCategoryMapping(rule: CategoryMappingEntity, onDone: (Long?) -> Unit = {}) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val id = mappingDao.upsert(rule.copy(updatedAt = System.currentTimeMillis()))
+                withContext(Dispatchers.Main) { onDone(id) }
+            } catch (e: Exception) {
+                AppLog.e("mapping", "upsert failed", e)
+                withContext(Dispatchers.Main) { onDone(null) }
+            }
+        }
+    }
+
+    fun deleteCategoryMapping(id: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try { mappingDao.deleteById(id) }
+            catch (e: Exception) { AppLog.e("mapping", "delete failed", e) }
+        }
     }
 
     /** 溯源记录（最新在前，联查已带对应账单 id 与待确认状态） */

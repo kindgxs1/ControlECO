@@ -28,7 +28,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,6 +61,7 @@ import com.controleco.app.ui.theme.categoryColor
 import com.controleco.app.ui.theme.eco
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
@@ -91,6 +95,7 @@ internal val TxEditCurrencyStyle = txText(19f, 700, 0f, 23f)
 internal val TxKeypadStyle = txText(20f, 700, 0f, 24f)
 
 private val TxDateFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy/MM/dd")
+private val TxTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
 // ---------- 标题 / 标签 ----------
 
@@ -258,6 +263,67 @@ fun TxDateField(
                 modifier = Modifier.weight(1f),
             )
             Icon(icon, contentDescription = "选择日期", tint = c.muted, modifier = Modifier.size(15.dp))
+        }
+    }
+}
+
+/** 可选时间行：null = 留空使用当前时间；点击开系统时间面板，面板内支持清空 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TxTimeField(
+    time: LocalTime?,
+    onPick: (LocalTime?) -> Unit,
+    modifier: Modifier = Modifier,
+    label: String? = null,
+    height: Dp = 43.dp,
+    radius: Dp = 11.dp,
+    icon: ImageVector = EcoIcons.Clock,
+) {
+    val c = MaterialTheme.eco
+    var show by remember { mutableStateOf(false) }
+    if (show) {
+        val init = time ?: LocalTime.now()
+        val state = rememberTimePickerState(initialHour = init.hour, initialMinute = init.minute)
+        AlertDialog(
+            onDismissRequest = { show = false },
+            text = { TimePicker(state = state) },
+            confirmButton = {
+                TextButton(onClick = {
+                    onPick(LocalTime.of(state.hour, state.minute))
+                    show = false
+                }) { Text("确定") }
+            },
+            dismissButton = { TextButton(onClick = {
+                onPick(null)
+                show = false
+            }) { Text("清空（当前时间）") } },
+        )
+    }
+    val shape = RoundedCornerShape(radius)
+    Column(modifier) {
+        if (label != null) {
+            TxFieldLabel(label)
+            Spacer(Modifier.height(6.dp))
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(height)
+                .clip(shape)
+                .background(c.surface2)
+                .border(1.dp, c.rule, shape)
+                .clickable { show = true }
+                .padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                time?.format(TxTimeFormatter) ?: "留空=当前时间",
+                style = EcoType.Input,
+                color = if (time != null) c.ink else c.quiet,
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(icon, contentDescription = "选择时间", tint = c.muted, modifier = Modifier.size(15.dp))
         }
     }
 }
