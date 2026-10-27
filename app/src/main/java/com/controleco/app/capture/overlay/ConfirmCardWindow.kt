@@ -179,7 +179,7 @@ internal object ConfirmCardWindow {
 
     // ---------- 已记入 · 撤销 细条 ----------
 
-    /** 确认入账后的非阻塞细条：底部小条 + 撤销按钮，几秒后自动消失 */
+    /** 确认入账后的非阻塞细条：**屏幕顶端**小条 + 撤销按钮，几秒后自动消失 */
     fun showSaved(type: TxType, amountCents: Long, onUndo: () -> Unit) {
         if (!this::appContext.isInitialized) return
         removeSavedWindow()
@@ -204,9 +204,9 @@ internal object ConfirmCardWindow {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            // 原型：底部 96dp 悬浮，不压住系统手势区
-            y = dp(96)
+            // 顶部细条：避开状态栏并留一点呼吸距离（悬浮卡收起后与卡片顶部同一条视线上）
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = statusBarInsetPx() + dp(10)
             if (Build.VERSION.SDK_INT >= 28) {
                 layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -307,4 +307,14 @@ internal object ConfirmCardWindow {
 
     private fun dp(value: Int): Int =
         (value * appContext.resources.displayMetrics.density).toInt()
+
+    /**
+     * 状态栏高度（px）：顶部细条要落在状态栏下方，否则会被状态栏图标压住。
+     * 取不到系统 dimen 时回落到 28dp（常见状态栏高度）。
+     */
+    private fun statusBarInsetPx(): Int = runCatching {
+        val res = appContext.resources
+        val id = res.getIdentifier("status_bar_height", "dimen", "android")
+        if (id > 0) res.getDimensionPixelSize(id) else dp(28)
+    }.getOrDefault(dp(28))
 }

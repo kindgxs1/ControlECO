@@ -122,7 +122,7 @@ class WechatPageRegressionTest {
         val expectedTxTime = millis(2026, 10, 17, 17, 36, 13)
         assertEquals(expectedTxTime, r.txTime)
         assertEquals(
-            "com.tencent.mm|INCOME|520|${expectedTxTime / 60_000}",
+            "com.tencent.mm|INCOME|520|${expectedTxTime / 1_000L}",
             r.dedupKey,
         )
 

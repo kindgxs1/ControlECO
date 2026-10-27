@@ -40,7 +40,7 @@ class PageFreshnessTest {
         val expected = LocalDateTime.of(2026, 10, 6, 9, 12, 0)
             .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
         assertEquals(expected, (result as PageParseResult.Candidate).candidate.txTime)
-        assertEquals("com.tencent.mm|EXPENSE|12800|${expected / 60_000}", result.candidate.dedupKey)
+        assertEquals("com.tencent.mm|EXPENSE|12800|${expected / 1_000L}", result.candidate.dedupKey)
     }
 
     @Test

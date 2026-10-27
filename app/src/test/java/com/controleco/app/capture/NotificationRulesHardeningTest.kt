@@ -130,26 +130,26 @@ class NotificationRulesHardeningTest {
     @Test
     fun `dedup key format is stable across channels`() {
         assertEquals(
-            "com.tencent.mm|EXPENSE|1280|${postTime / 60_000}",
+            "com.tencent.mm|EXPENSE|1280|${postTime / 1_000L}",
             NotificationRules.dedupKey(NotificationRules.WECHAT, TxType.EXPENSE, false, 1280, postTime),
         )
         assertEquals(
-            "com.tencent.mm|INCOME|R|1280|${postTime / 60_000}",
+            "com.tencent.mm|INCOME|R|1280|${postTime / 1_000L}",
             NotificationRules.dedupKey(NotificationRules.WECHAT, TxType.INCOME, true, 1280, postTime),
         )
     }
 
     @Test
     fun `dedup key can be rebuilt with a new amount`() {
-        // 金额待补录回填：只替换金额段，来源/方向/退款段与分钟桶保持不变
+        // 金额待补录回填：只替换金额段，来源/方向/退款段与时间桶（秒级）保持不变
         val key = NotificationRules.dedupKey(NotificationRules.WECHAT, TxType.EXPENSE, false, 0L, postTime)
         assertEquals(
-            "com.tencent.mm|EXPENSE|1280|${postTime / 60_000}",
+            "com.tencent.mm|EXPENSE|1280|${postTime / 1_000L}",
             dedupKeyWithAmount(key, 1280),
         )
         val refundKey = NotificationRules.dedupKey(NotificationRules.ALIPAY, TxType.INCOME, true, 0L, postTime)
         assertEquals(
-            "com.eg.android.AlipayGphone|INCOME|R|990|${postTime / 60_000}",
+            "com.eg.android.AlipayGphone|INCOME|R|990|${postTime / 1_000L}",
             dedupKeyWithAmount(refundKey, 990),
         )
         // 残缺键不重算

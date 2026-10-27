@@ -366,6 +366,20 @@ object CaptureCenter {
             entered.txId, type, isRefund, amountCents, counterparty, sourceLabel, dedupKey,
             forceNotify = isOverlayConfirmEnabled(),
         )
+        // 自动入账（不开悬浮窗/卡片被系统拦截）：屏幕顶端给一条「已记入 · 撤销」细条，
+        // 让用户立刻知道记了什么并可直接反悔；细条需要悬浮窗权限，无权限时静默失败，通知仍是兜底。
+        if (entered.txId > 0) {
+            mainHandler.post {
+                ConfirmCardWindow.showSaved(type, amountCents) {
+                    scope.launch {
+                        runCatching { PendingActions.undoEntered(db, txDao, pendingDao, dedupKey) }
+                            .onFailure { AppLog.w("Ntf", "undo auto entry failed", it) }
+                        cancelCaptureNotification(entryNotifId(dedupKey))
+                        toast("已撤销")
+                    }
+                }
+            }
+        }
     }
 
     /** 横幅通知（卡片不可用/收起后的兜底提醒；「已自动入账」等其它提醒另走 postCaptureNotification） */
@@ -1627,7 +1641,7 @@ object CaptureCenter {
                         return@launch
                     }
                 }
-                val pendingId = pendingDao.insert(
+                val queued = enqueuePending(
                     PendingTransactionEntity(
                         type = parsed.type,
                         amountCents = parsed.amountCents,
@@ -1642,6 +1656,25 @@ object CaptureCenter {
                     ),
                 )
                 captureDao.updateMatch(rawId, parsed.ruleName, true)
+                if (queued.duplicate) {
+                    // 同一条通知的重复回调：库中已有这笔，不再重复提醒
+                    AppLog.d("Ntf", "skip duplicate notification instance #${queued.id} key=${queued.dedupKey}")
+                    traceCapture(
+                        channel = CaptureChannel.NOTIFICATION,
+                        packageName = packageName,
+                        title = title, text = text, bigText = bigText,
+                        capturedAt = sourceAt,
+                        matchedRule = parsed.ruleName,
+                        type = parsed.type,
+                        amountCents = parsed.amountCents,
+                        note = parsed.note,
+                        dedupKey = queued.dedupKey,
+                        outcome = TraceOutcome.SKIPPED_DUPLICATE,
+                    )
+                    return@launch
+                }
+                val pendingId = queued.id
+                val queuedKey = queued.dedupKey
                 AppLog.i(
                     "Ntf",
                     "queued pending: ${parsed.ruleName} ${parsed.type} ${Money.formatYuan(parsed.amountCents)}" +
@@ -1656,7 +1689,7 @@ object CaptureCenter {
                     type = parsed.type,
                     amountCents = parsed.amountCents,
                     note = parsed.note,
-                    dedupKey = dedupKey,
+                    dedupKey = queuedKey,
                     outcome = TraceOutcome.PENDING,
                 )
                 announceCapture(
@@ -1666,7 +1699,7 @@ object CaptureCenter {
                     sourceLabel = NotificationRules.sourceLabel(packageName),
                     counterparty = "",
                     paymentMethod = null,
-                    dedupKey = dedupKey,
+                    dedupKey = queuedKey,
                     ruleName = parsed.ruleName,
                     txTime = null,
                     note = parsed.note,
@@ -2937,6 +2970,51 @@ object CaptureCenter {
         )
 
     /**
+     * 撞键补录键：在时间桶后追加唯一盐（`…|1234@n:xx` → `…|1234~987@n:xx`）。
+     * 保留 `@身份` 后缀，后续 [flowCompatible] 仍能按身份区分同一笔与另一笔。
+     */
+    private fun uniqueDedupKey(key: String, salt: Long): String {
+        val at = key.indexOf('@')
+        val body = if (at >= 0) key.substring(0, at) else key
+        val suffix = if (at >= 0) key.substring(at) else ""
+        return "$body~$salt$suffix"
+    }
+
+    /** 入队结果：[duplicate] = 同一条通知的重复回调（库中已有同笔，不应重复提醒） */
+    private data class Enqueued(val id: Long, val dedupKey: String, val duplicate: Boolean)
+
+    /**
+     * 待确认条目入队（通知通道用）。
+     *
+     * dedupKey 是唯一索引且 `@Insert` 用 `IGNORE`：撞键时返回 -1，若直接当成功处理，
+     * **第二笔真实交易就这样静默消失**（"两笔并成一笔"的直接原因）。
+     * 撞键后按身份再判一次：
+     * - 同一条通知实例（`notificationInstanceId` 相同）→ 真重复，沿用既有条目；
+     * - 其余（另一条通知/无身份）→ 另一笔真实交易，换唯一键补录，绝不丢单。
+     */
+    private suspend fun enqueuePending(pending: PendingTransactionEntity): Enqueued {
+        val id = pendingDao.insert(pending)
+        if (id > 0) return Enqueued(id, pending.dedupKey, duplicate = false)
+        val existing = pendingDao.findByDedupKey(pending.dedupKey)
+        if (existing != null) {
+            val sameNotification = pending.notificationInstanceId.isNotBlank() &&
+                entryNotificationInstanceId(existing) == pending.notificationInstanceId
+            if (sameNotification) {
+                return Enqueued(existing.id, existing.dedupKey, duplicate = true)
+            }
+        }
+        // 撞键且不是同一通知实例，或 key 根本没查回来（极少数其它写入失败）：换唯一键补录，绝不丢单
+        val altKey = uniqueDedupKey(pending.dedupKey, System.nanoTime())
+        val altId = pendingDao.insert(pending.copy(dedupKey = altKey))
+        if (altId <= 0) {
+            AppLog.w("Dedup", "pending collision retry failed key=$altKey existing=${existing?.id}")
+            return Enqueued(existing?.id ?: -1L, existing?.dedupKey ?: pending.dedupKey, duplicate = true)
+        }
+        AppLog.i("Dedup", "pending key collision -> separate entry #$altId ${pending.dedupKey} => $altKey")
+        return Enqueued(altId, altKey, duplicate = false)
+    }
+
+    /**
      * 直接入账（三种入账方式共用）：按推测分类/账户先落账——这就是"先入账"的落点，
      * 后续的卡片（改/删）与通知（提醒/撤销）都围绕这笔已有账目工作，卡片弹不出来账也不会丢。
      * 条目以 AUTO 状态留在合并池里——页面通道随后捕获同笔时回填更全的信息。
@@ -2958,6 +3036,8 @@ object CaptureCenter {
         flowId: String = "",
         notificationInstanceId: String = "",
         orderId: String = "",
+        /** 撞键后是否允许换唯一键重试一次（内部用，避免无限递归） */
+        allowKeyRetry: Boolean = true,
     ): Entered? {
         val learned = merchantRuleDao.getAll()
         val categories = categoryDao.getAll()
@@ -3048,6 +3128,36 @@ object CaptureCenter {
             if (e is EntryAssociationException || e.message?.contains("UNIQUE", ignoreCase = true) == true) {
                 val existing = txDao.findIdByExternalId("NTF:$dedupKey")
                 val existingPending = pendingDao.findByDedupKey(dedupKey)
+                // 撞键的既有条目若属于**另一条通知实例 / 另一次页面流程**，说明这是第二笔真实交易
+                // （同秒同额），而不是"这笔已记过"——换一把唯一键重试一次，绝不能把它并进上一笔。
+                val sameIdentity = existingPending != null && when {
+                    notificationInstanceId.isNotBlank() ->
+                        entryNotificationInstanceId(existingPending) == notificationInstanceId
+                    flowId.isNotBlank() -> entryFlowId(existingPending) == flowId
+                    else -> false
+                }
+                if (!sameIdentity && allowKeyRetry) {
+                    val altKey = uniqueDedupKey(dedupKey, System.nanoTime())
+                    AppLog.i("Dedup", "entry key collision -> retry as separate entry $dedupKey => $altKey")
+                    return enterEntry(
+                        type = type,
+                        amountCents = amountCents,
+                        timestamp = timestamp,
+                        counterparty = counterparty,
+                        note = note,
+                        sourcePackage = sourcePackage,
+                        dedupKey = altKey,
+                        ruleName = ruleName,
+                        isRefund = isRefund,
+                        source = source,
+                        bankName = bankName,
+                        paymentInstrument = paymentInstrument,
+                        flowId = flowId,
+                        notificationInstanceId = notificationInstanceId,
+                        orderId = orderId,
+                        allowKeyRetry = false,
+                    )
+                }
                 AppLog.i(
                     "Ntf",
                     "direct entry skipped (already recorded) dedup=$dedupKey " +

@@ -148,9 +148,16 @@ object NotificationRules {
         return ruleName.substringBefore('·').ifBlank { label }
     }
 
-    /** 去重键：来源包名 + 方向（退款加 R）+ 金额分 + 分钟级时间。通知/页面/短信三条路径共用同一构造 */
+    /**
+     * 去重键：来源包名 + 方向（退款加 R）+ 金额分 + **秒级**时间。通知/页面/短信三条路径共用同一构造。
+     *
+     * 时间桶原为分钟级：同一分钟内同来源、同方向、同金额的两笔真实交易会撞成同一把键，
+     * 插入时被唯一索引静默丢弃（`OnConflictStrategy.IGNORE`）——表现为"两笔并成一笔"。
+     * 改为秒级后，连续两笔同额付款（地铁、连点扫码、同价商品）天然分开；
+     * 同一笔的重复回调若跨秒，由通知实例身份（[notificationInstanceId]）与 10s 同额融合兜底。
+     */
     fun dedupKey(packageName: String, type: TxType, isRefund: Boolean, amountCents: Long, timeMillis: Long): String =
-        "$packageName|$type${if (isRefund) "|R" else ""}|$amountCents|${timeMillis / 60_000}"
+        "$packageName|$type${if (isRefund) "|R" else ""}|$amountCents|${timeMillis / 1_000L}"
 
     // ---------- 文本归一化与遮罩 ----------
 

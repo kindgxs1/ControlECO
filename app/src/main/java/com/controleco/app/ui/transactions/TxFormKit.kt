@@ -5,11 +5,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,7 +20,11 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DropdownMenu
@@ -28,15 +34,17 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TimePicker
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.rememberDatePickerState
-import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,13 +54,19 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.controleco.app.data.db.TxType
 import com.controleco.app.ui.common.EcoIcons
 import com.controleco.app.ui.eco.EcoChip
+import com.controleco.app.ui.eco.EcoGhostButton
+import com.controleco.app.ui.eco.EcoPane
+import com.controleco.app.ui.eco.EcoPrimaryButton
 import com.controleco.app.ui.eco.EcoSegmented
 import com.controleco.app.ui.eco.EcoSwitch
 import com.controleco.app.ui.theme.EcoType
@@ -95,7 +109,7 @@ internal val TxEditCurrencyStyle = txText(19f, 700, 0f, 23f)
 internal val TxKeypadStyle = txText(20f, 700, 0f, 24f)
 
 private val TxDateFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy/MM/dd")
-private val TxTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+private val TxTimeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
 // ---------- 标题 / 标签 ----------
 
@@ -267,8 +281,8 @@ fun TxDateField(
     }
 }
 
-/** 可选时间行：null = 留空使用当前时间；点击开系统时间面板，面板内支持清空 */
-@OptIn(ExperimentalMaterial3Api::class)
+/** 可选时间行：null = 留空使用当前时间；点击开「时 / 分 / 秒」三列滚轮 + 手动输入面板 */
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun TxTimeField(
     time: LocalTime?,
@@ -282,21 +296,17 @@ fun TxTimeField(
     val c = MaterialTheme.eco
     var show by remember { mutableStateOf(false) }
     if (show) {
-        val init = time ?: LocalTime.now()
-        val state = rememberTimePickerState(initialHour = init.hour, initialMinute = init.minute)
-        AlertDialog(
-            onDismissRequest = { show = false },
-            text = { TimePicker(state = state) },
-            confirmButton = {
-                TextButton(onClick = {
-                    onPick(LocalTime.of(state.hour, state.minute))
-                    show = false
-                }) { Text("确定") }
+        TxTimeWheelDialog(
+            initial = time ?: LocalTime.now(),
+            onConfirm = {
+                onPick(it)
+                show = false
             },
-            dismissButton = { TextButton(onClick = {
+            onClear = {
                 onPick(null)
                 show = false
-            }) { Text("清空（当前时间）") } },
+            },
+            onDismiss = { show = false },
         )
     }
     val shape = RoundedCornerShape(radius)
@@ -327,6 +337,236 @@ fun TxTimeField(
         }
     }
 }
+
+/** 「时:分:秒」手动输入解析：支持 `9` / `9:30` / `09:30:15`，非法输入返回 null */
+internal fun parseTimeInput(text: String): LocalTime? {
+    val t = text.trim().replace('：', ':')
+    if (t.isEmpty()) return null
+    val parts = t.split(':')
+    return runCatching {
+        fun Int.h(): Int = coerceIn(0, 23)
+        fun Int.m(): Int = coerceIn(0, 59)
+        when (parts.size) {
+            1 -> LocalTime.of(parts[0].toInt().h(), 0, 0)
+            2 -> LocalTime.of(parts[0].toInt().h(), parts[1].toInt().m(), 0)
+            else -> LocalTime.of(parts[0].toInt().h(), parts[1].toInt().m(), parts[2].toInt().coerceIn(0, 59))
+        }
+    }.getOrNull()
+}
+
+/**
+ * 时间选择面板：左「时」、中「分」、右「秒」三列滚轮（上下滑动选中，停止后吸附），
+ * 下方可直接输入 `HH:mm:ss`。滚轮与输入框双向同步，底栏「清空」= 回到当前时刻。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun TxTimeWheelDialog(
+    initial: LocalTime,
+    onConfirm: (LocalTime) -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = MaterialTheme.eco
+    var hour by remember { mutableIntStateOf(initial.hour) }
+    var minute by remember { mutableIntStateOf(initial.minute) }
+    var second by remember { mutableIntStateOf(initial.second) }
+    var input by remember { mutableStateOf(timeText(hour, minute, second)) }
+
+    fun syncInput() {
+        input = timeText(hour, minute, second)
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        EcoPane(shape = RoundedCornerShape(18.dp), elevation = 12.dp) {
+            Column(
+                Modifier
+                    .width(316.dp)
+                    .padding(horizontal = 18.dp, vertical = 16.dp),
+            ) {
+                Text("选择时间", style = EcoType.PageLead, color = c.ink)
+                Spacer(Modifier.height(3.dp))
+                Text("上下滑动选择，或直接输入时间", style = EcoType.PageNote, color = c.quiet)
+
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TimeWheelColumn(
+                        items = hourItems,
+                        selectedIndex = hour,
+                        onSelected = {
+                            hour = it
+                            syncInput()
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(":", style = EcoType.PageLead, color = c.quiet)
+                    TimeWheelColumn(
+                        items = minuteItems,
+                        selectedIndex = minute,
+                        onSelected = {
+                            minute = it
+                            syncInput()
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(":", style = EcoType.PageLead, color = c.quiet)
+                    TimeWheelColumn(
+                        items = secondItems,
+                        selectedIndex = second,
+                        onSelected = {
+                            second = it
+                            syncInput()
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
+                TxFieldLabel("手动输入（时:分:秒）")
+                Spacer(Modifier.height(5.dp))
+                BasicTextField(
+                    value = input,
+                    onValueChange = { raw ->
+                        // 只允许数字与冒号，最多 8 位（HH:mm:ss）
+                        val cleaned = raw.filter { it.isDigit() || it == ':' }.take(8)
+                        input = cleaned
+                        parseTimeInput(cleaned)?.let {
+                            hour = it.hour
+                            minute = it.minute
+                            second = it.second
+                        }
+                    },
+                    singleLine = true,
+                    textStyle = EcoType.Input.copy(color = c.ink),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(38.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(c.surface2)
+                        .border(1.dp, c.rule, RoundedCornerShape(10.dp))
+                        .padding(horizontal = 10.dp),
+                    decorationBox = { inner ->
+                        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+                            if (input.isEmpty()) {
+                                Text("例如 09:30:00", style = EcoType.Input, color = c.quiet)
+                            }
+                            inner()
+                        }
+                    },
+                )
+
+                Spacer(Modifier.height(16.dp))
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    EcoGhostButton(
+                        text = "清空",
+                        onClick = onClear,
+                        height = 38.dp,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    EcoGhostButton(
+                        text = "取消",
+                        onClick = onDismiss,
+                        height = 38.dp,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    EcoPrimaryButton(
+                        text = "确定",
+                        onClick = { onConfirm(LocalTime.of(hour, minute, second)) },
+                        height = 38.dp,
+                        modifier = Modifier.width(88.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+private val hourItems: List<String> = (0..23).map { it.toString().padStart(2, '0') }
+private val minuteItems: List<String> = (0..59).map { it.toString().padStart(2, '0') }
+private val secondItems: List<String> = (0..59).map { it.toString().padStart(2, '0') }
+
+private fun timeText(hour: Int, minute: Int, second: Int): String =
+    "${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}:${second.toString().padStart(2, '0')}"
+
+/**
+ * 单列滚轮：固定 [visibleRows] 行、上下滑动、停止后吸附到最近一项；
+ * 中央一行高亮（surface2 底），选中项墨色加粗。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun TimeWheelColumn(
+    items: List<String>,
+    selectedIndex: Int,
+    onSelected: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    itemHeight: Dp = 34.dp,
+    visibleRows: Int = 3,
+) {
+    val c = MaterialTheme.eco
+    val listState = rememberLazyListState()
+    val fling = rememberSnapFlingBehavior(listState)
+    val pad = visibleRows / 2
+
+    // 外部值变化（含手动输入）→ 滚轮跟随；用户自己滑到该位置时不重复滚动
+    LaunchedEffect(selectedIndex) {
+        val target = (selectedIndex + pad).coerceIn(0, items.size - 1)
+        if (listState.firstVisibleItemIndex != target) {
+            listState.animateScrollToItem(target)
+        }
+    }
+
+    val latestIndex by rememberUpdatedState(selectedIndex)
+    val latestOnSelected by rememberUpdatedState(onSelected)
+    // 只在滚动停止时上报，避免滚动过程中每帧回调造成父级频繁重组
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+            if (scrolling) return@collect
+            val v = (listState.firstVisibleItemIndex - pad).coerceIn(0, items.lastIndex)
+            if (v != latestIndex) latestOnSelected(v)
+        }
+    }
+
+    Box(modifier.height(itemHeight * visibleRows)) {
+        // 中央高亮带（画在文字下方）
+        Box(
+            Modifier
+                .align(Alignment.Center)
+                .fillMaxWidth()
+                .height(itemHeight)
+                .clip(RoundedCornerShape(8.dp))
+                .background(c.surface2),
+        )
+        LazyColumn(
+            state = listState,
+            flingBehavior = fling,
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = itemHeight * pad),
+            modifier = Modifier.fillMaxWidth().height(itemHeight * visibleRows),
+        ) {
+            items(items.size) { index ->
+                val selected = index == selectedIndex
+                Box(
+                    Modifier.fillMaxWidth().height(itemHeight),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        items[index],
+                        style = EcoType.Input,
+                        color = if (selected) c.ink else c.quiet,
+                        fontWeight = if (selected) FontWeight(700) else FontWeight(400),
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+    }
+}
+
 
 /**
  * 紧凑开关行：左侧标题（可带副标）+ 右侧开关。
