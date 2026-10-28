@@ -47,6 +47,11 @@ android {
         storePassword = "android"
         keyAlias = "androiddebugkey"
         keyPassword = "android"
+        // 三档签名全开：默认按 minSdk 只签 v2，部分厂商安装器/文件管理器只认 v1（JAR）签名，
+        // 会报「安装包未包含任何证书」而拒绝安装。v1+v2+v3 可保证各版本系统与三方安装器都能装。
+        enableV1Signing = true
+        enableV2Signing = true
+        enableV3Signing = true
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
