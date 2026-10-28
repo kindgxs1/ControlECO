@@ -340,6 +340,10 @@ fun TxTimeField(
                 onPick(it)
                 show = false
             },
+            onClear = {
+                onPick(null)
+                show = false
+            },
             onDismiss = { show = false },
         )
     }
@@ -374,13 +378,14 @@ fun TxTimeField(
 
 /**
  * 时间选择面板：左「时」、中「分」、右「秒」三列滚轮（上下滑动选中，停止后吸附），
- * 下方可直接输入 `HH:mm:ss`。滚轮与输入框双向同步，底栏只有「取消 / 确定」。
+ * 下方可直接输入 `HH:mm:ss`。滚轮与输入框双向同步，底栏「清空」= 回到当前时刻。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TxTimeWheelDialog(
     initial: LocalTime,
     onConfirm: (LocalTime) -> Unit,
+    onClear: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val c = MaterialTheme.eco
@@ -483,8 +488,16 @@ private fun TxTimeWheelDialog(
 
                 Spacer(Modifier.height(16.dp))
                 // EcoGhostButton / EcoPrimaryButton 内部固定 fillMaxWidth，直接放进 Row 会各自占满整行、
-                // 把「取消 / 确定」挤出窗口。用 weight 容器限宽。
+                // 把「清空 / 取消 / 确定」挤出窗口（表现为"只有清空按钮、没有确定"）。用 weight 容器限宽。
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) {
+                        EcoGhostButton(
+                            text = "清空",
+                            onClick = onClear,
+                            height = 38.dp,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
                     Box(Modifier.weight(1f)) {
                         EcoGhostButton(
                             text = "取消",
