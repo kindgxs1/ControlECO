@@ -1,6 +1,7 @@
 package com.controleco.app.capture.overlay
 
 import com.controleco.app.capture.CaptureDefaults
+import com.controleco.app.capture.GuardedField
 
 /**
  * 悬浮确认卡的显示决策与关闭处置（纯函数，便于单测）与时间常量。
@@ -55,12 +56,15 @@ internal data class DismissSnapshot(
     val categoryId: Long?,
     val accountId: Long?,
     val counterparty: String,
+    val note: String = "",
     /** 关闭时卡内的「不计入资产统计」选择（自动入账默认 false = 计入） */
     val excludeFromAssets: Boolean = false,
     /** 关闭时卡内的「不计入账单和收支统计」选择（自动入账默认 true = 计入） */
     val countInStats: Boolean = true,
     /** 用户在卡片里改过任何字段（没有改动就不必回写数据库） */
     val edited: Boolean = false,
+    /** 用户改过的字段集合（供 [OverlayFieldGuards] 登记） */
+    val editedFields: Set<GuardedField> = emptySet(),
 )
 
 /**

@@ -164,7 +164,7 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
         if (mode == PeriodMode.MONTH) {
             ChartMath.monthBars(rowsReady, month, monthStartDay)
         } else {
-            ChartMath.yearBars(rowsReady, month)
+            ChartMath.yearBars(rowsReady, month, monthStartDay)
         }
     }
     // 柱状图入场进度**由页面持有**：`ExpenseBarChart` 是 LazyColumn 的一个 item，滑出屏幕就被销毁，

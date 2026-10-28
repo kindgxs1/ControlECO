@@ -95,7 +95,7 @@ class ChartMathTest {
             row(TxType.EXPENSE, 5_000, LocalDateTime.of(2026, 12, 31, 23, 0)),
             row(TxType.EXPENSE, 7_000, LocalDateTime.of(2025, 12, 31, 23, 0)),
         )
-        val bars = ChartMath.yearBars(rows, month, zone)
+        val bars = ChartMath.yearBars(rows, month, startDay = 1, zone = zone)
 
         assertEquals(12, bars.size)
         assertEquals(3_000L, bars[0].cents)

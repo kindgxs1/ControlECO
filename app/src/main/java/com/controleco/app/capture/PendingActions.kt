@@ -34,6 +34,7 @@ internal object PendingActions {
         categoryId: Long,
         accountId: Long,
         counterparty: String = item.counterparty,
+        note: String = item.note,
         amountCents: Long = item.amountCents,
         /** 不计入资产统计：自动入账默认 false（计入） */
         excludeFromAssets: Boolean = false,
@@ -42,6 +43,7 @@ internal object PendingActions {
     ): Long? {
         val externalId = "NTF:${item.dedupKey}"
         val counterpartyValue = counterparty.trim().ifBlank { item.counterparty }
+        val noteValue = note.ifBlank { item.note.ifBlank { item.ruleName } }
         val txId = try {
             db.withTransaction {
                 val id = txDao.insert(
@@ -51,7 +53,7 @@ internal object PendingActions {
                         categoryId = categoryId,
                         accountId = accountId,
                         timestamp = item.timestamp,
-                        note = item.note.ifBlank { item.ruleName },
+                        note = noteValue,
                         counterparty = counterpartyValue,
                         source = CaptureDefaults.txSource(item.sourcePackage),
                         externalId = externalId,
@@ -78,7 +80,7 @@ internal object PendingActions {
         }
         if (txId != null) {
             merchantRuleDao?.let {
-                MerchantRules.learn(it, item.type, categoryId, accountId, counterpartyValue, item.note)
+                MerchantRules.learn(it, item.type, categoryId, accountId, counterpartyValue, noteValue)
             }
             AppLog.i("pending", "confirmed #${item.id} externalId=$externalId tx=$txId")
         }
@@ -95,8 +97,8 @@ internal object PendingActions {
      * 已入账条目的编辑同步（悬浮卡"先入账、后修改"）：卡内当前值写回交易与 AUTO 条目，
      * 并学习商户归类（与 [confirm] 同一口径）。
      *
-     * 同时给条目打上"用户已手改"标记：此后页面/银行侧的自动富化不再覆盖金额/商户/时间——
-     * 用户输入优先于自动解析（见 CaptureMerge.mergePageInfo）。
+     * 用户改过的字段由内存里的 [OverlayFieldGuards] 保护（后续富化按字段跳过），
+     * 不再写 `pending_transactions.userEdited`（旧的整条锁定位留给升级前的历史条目）。
      * 返回 false = 找不到该笔交易（可能已被撤销），调用方只需静默收场。
      */
     suspend fun updateEntered(
@@ -108,6 +110,7 @@ internal object PendingActions {
         categoryId: Long,
         accountId: Long,
         counterparty: String,
+        note: String,
         amountCents: Long,
         excludeFromAssets: Boolean = false,
         /** 计入账单和收支统计：默认 true（计入） */
@@ -121,18 +124,17 @@ internal object PendingActions {
         val fresh = pendingDao.getById(item.id) ?: item
         db.withTransaction {
             txDao.updateEnteredFields(
-                txId, amountCents, categoryId, accountId, counterpartyValue, excludeFromAssets, countInStats,
+                txId, amountCents, categoryId, accountId, counterpartyValue, note, excludeFromAssets, countInStats,
             )
-            // AUTO 条目同步：页面/银行通道后续富化以它为准，不能留旧值；并置位"用户已手改"
+            // AUTO 条目同步：页面/银行通道后续富化以它为准，不能留旧值
             pendingDao.updateFromPage(
                 item.id, amountCents, fresh.timestamp, counterpartyValue, fresh.note, fresh.ruleName,
             )
-            pendingDao.markUserEdited(item.id)
         }
         merchantRuleDao?.let {
-            MerchantRules.learn(it, item.type, categoryId, accountId, counterpartyValue, item.note)
+            MerchantRules.learn(it, item.type, categoryId, accountId, counterpartyValue, note)
         }
-        AppLog.i("pending", "updated entered tx=#$txId amount=$amountCents externalId=$externalId (user edited)")
+        AppLog.i("pending", "updated entered tx=#$txId amount=$amountCents externalId=$externalId")
         return true
     }
 

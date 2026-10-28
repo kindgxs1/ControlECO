@@ -248,11 +248,11 @@ interface TransactionDao {
     @Query("UPDATE transactions SET flowId = :flowId WHERE externalId = :externalId AND flowId = ''")
     suspend fun updateFlowIdByExternalId(externalId: String, flowId: String)
 
-    /** 悬浮卡编辑同步：金额/分类/账户/商户/是否计入资产/是否计入统计回写已入账的交易（「忽略」与「撤销」走删除） */
+    /** 悬浮卡编辑同步：金额/分类/账户/商户/备注/是否计入资产/是否计入统计回写已入账的交易（「忽略」与「撤销」走删除） */
     @Query(
         """UPDATE transactions
            SET amountCents = :amountCents, categoryId = :categoryId,
-               accountId = :accountId, counterparty = :counterparty,
+               accountId = :accountId, counterparty = :counterparty, note = :note,
                excludeFromAssets = :excludeFromAssets, countInStats = :countInStats
            WHERE id = :id"""
     )
@@ -262,6 +262,7 @@ interface TransactionDao {
         categoryId: Long,
         accountId: Long,
         counterparty: String,
+        note: String,
         excludeFromAssets: Boolean,
         countInStats: Boolean,
     )

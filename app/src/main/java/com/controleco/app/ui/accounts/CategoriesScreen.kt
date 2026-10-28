@@ -54,6 +54,7 @@ import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.data.budget.CategoryBudgetMath
 import com.controleco.app.data.budget.CategoryBudgetMode
 import com.controleco.app.data.db.CategoryEntity
+import com.controleco.app.data.db.CategoryRules
 import com.controleco.app.data.db.TxType
 import com.controleco.app.ui.common.ColorWheelDialog
 import com.controleco.app.ui.common.EcoIcons
@@ -651,8 +652,8 @@ private fun CategoryEditorSheet(
     val allGlyphs = Glyph.entries.toList()
     val visibleGlyphs = if (showAllGlyphs) allGlyphs else allGlyphs.take(QUICK_GLYPH_COUNT)
     val glyphTintColor = currentColor?.let { Color(it or 0xFF000000.toInt()) }
-    // 「其他」是删除分类的兜底：不提供改名入口、类型锁死、删除置灰，靠界面本身表达约束
-    val isFallback = initial?.name == "其他" && initial?.parentId == null
+    // 保留分类（「其他」/ 收入「退款」「AA」「报销」）不提供改名入口、类型锁死、删除置灰
+    val isLocked = initial?.let { CategoryRules.isLocked(it) } ?: false
     val selectedParent = parentOptions.firstOrNull { it.id == parentId }
 
     EcoSheet(
@@ -689,7 +690,7 @@ private fun CategoryEditorSheet(
                 }
             }
 
-            if (!isFallback) {
+            if (!isLocked) {
                 EcoField(
                     label = "名称",
                     value = name,
@@ -740,7 +741,7 @@ private fun CategoryEditorSheet(
                         localError = null
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = !isFallback && parentId == 0L,
+                    enabled = !isLocked && parentId == 0L,
                 )
             }
 
@@ -1025,7 +1026,7 @@ private fun CategoryEditorSheet(
                     EcoDangerButton(
                         text = "删除分类",
                         onClick = { confirmDelete = true },
-                        enabled = !isFallback,
+                        enabled = !isLocked,
                         modifier = Modifier.weight(1f),
                     )
                 }

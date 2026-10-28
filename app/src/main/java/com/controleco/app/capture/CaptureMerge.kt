@@ -26,6 +26,26 @@ import kotlin.math.abs
 internal const val SAME_ORDER_WINDOW_MS = 10_000L
 
 /**
+ * 用户在悬浮确认卡里手动改过的字段。
+ *
+ * 语义：**用户动过的字段，后续重复捕获不再改写；没动过的字段仍按原逻辑被页面/银行侧富化。**
+ * 与 [PendingTransactionEntity.userEdited]（整条锁定）的关系：`userEdited` 只保留给升级前
+ * 就已经置位的旧条目（行为不变），新的一次编辑不再整条锁定，只锁定真正改过的字段。
+ * 登记在内存里（[OverlayFieldGuards]），进程被杀后失效——2026-10-27 用户口径。
+ */
+internal enum class GuardedField {
+    AMOUNT,
+    COUNTERPARTY,
+    NOTE,
+    CATEGORY,
+    ACCOUNT,
+    /** 不计入资产统计开关（work-new 特有） */
+    ASSET,
+    /** 计入账单和收支统计开关（work-new 特有） */
+    STATS,
+}
+
+/**
  * 美团外卖的页面重捕窗口：支付成功后弹窗干扰/页面重渲染会让它的付款结果页被重新观察，
  * 快照内容略有出入（营销节点增减）、捕获时刻相差一两分钟——只靠 10s 窗口会把同一笔记成两条。
  * **只对美团外卖生效**。
@@ -320,6 +340,8 @@ internal fun mergePageInfo(
     pagePaymentMethod: String?,
     pageRuleName: String,
     pageInstrument: String = "",
+    /** 用户在悬浮卡里改过的字段（[OverlayFieldGuards] 登记）；空 = 全部按自动富化处理 */
+    guarded: Set<GuardedField> = emptySet(),
 ): PageMerge {
     val baseNote = pageNote.ifBlank { existing.note }
     val mergedNote = buildString {
@@ -329,9 +351,13 @@ internal fun mergePageInfo(
             append("支付方式 $pagePaymentMethod")
         }
     }.take(300)
-    if (existing.userEdited) {
-        // 用户改过：金额/时间/商户/备注/规则名都保持既有值，只补空白字段。
-        // 备注不能再用页面内容重新拼装——否则正式账单与待确认条目的备注会不一致。
+    // 升级前置过 userEdited 的旧条目：整条锁定，行为与升级前一致（用户口径：旧条目不迁移）；
+    // 新编辑按 [guarded] 逐字段锁定（金额/商户/备注各自独立），未锁定的字段照旧被页面覆盖。
+    val legacyLock = existing.userEdited
+    val lockAmount = legacyLock || GuardedField.AMOUNT in guarded
+    val lockCounterparty = legacyLock || GuardedField.COUNTERPARTY in guarded
+    val lockNote = legacyLock || GuardedField.NOTE in guarded
+    if (legacyLock) {
         return PageMerge(
             amountCents = existing.amountCents,
             timestamp = existing.timestamp,
@@ -345,10 +371,10 @@ internal fun mergePageInfo(
         it.isNotBlank() && !PageParseSupport.isAmountLikeNode(it)
     }
     return PageMerge(
-        amountCents = pageAmountCents,
+        amountCents = if (lockAmount) existing.amountCents else pageAmountCents,
         timestamp = pageTxTime ?: existing.timestamp,
-        counterparty = usableCounterparty ?: existing.counterparty,
-        note = mergedNote,
+        counterparty = if (lockCounterparty) existing.counterparty else (usableCounterparty ?: existing.counterparty),
+        note = if (lockNote) existing.note else mergedNote,
         ruleName = pageRuleName.ifBlank { existing.ruleName },
         paymentInstrument = pageInstrument.ifBlank { existing.paymentInstrument },
     )

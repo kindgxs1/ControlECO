@@ -193,4 +193,29 @@ internal object CrossChannelDedup {
     ): Boolean =
         hasBankEvidence(paymentText, bankName, cardTail) ||
             bankTextMentionsPayChannel(bankText, paySource)
+
+    /**
+     * 支付 ⇄ 银行归并的"线索依据"（2026-10-27 用户规则：微信放宽）。
+     *
+     * - [WECHAT_AMOUNT_ONLY]：微信支付的页面/通知里通常不披露银行卡号，无法提供银行名/卡尾号线索；
+     *   但微信扣款与银行动账必然成对出现，所以**只凭金额 + 时间 + 方向 + 退款标记**就允许合并。
+     * - [EVIDENCE]：支付宝 / 云闪付仍要求可核对线索（支付文本含银行名/卡尾号，或银行文本点名渠道）。
+     */
+    enum class LinkReason { WECHAT_AMOUNT_ONLY, EVIDENCE }
+
+    /**
+     * 支付 ⇄ 银行归并的统一入口：返回 null 表示不合，非 null 表示合并及依据。
+     * 微信走金额+时间（[LinkReason.WECHAT_AMOUNT_ONLY]），支付宝/云闪付走证据（[LinkReason.EVIDENCE]）。
+     */
+    fun payBankLink(
+        paymentText: String,
+        bankText: String,
+        bankName: String,
+        cardTail: String?,
+        paySource: String,
+    ): LinkReason? = when {
+        paySource == NotificationRules.WECHAT -> LinkReason.WECHAT_AMOUNT_ONLY
+        payBankLinked(paymentText, bankText, bankName, cardTail, paySource) -> LinkReason.EVIDENCE
+        else -> null
+    }
 }

@@ -11,6 +11,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.ComposeView
+import com.controleco.app.capture.GuardedField
 import com.controleco.app.data.db.AccountEntity
 import com.controleco.app.data.db.CategoryEntity
 import com.controleco.app.data.db.PendingTransactionEntity
@@ -82,8 +83,10 @@ internal object ConfirmCardWindow {
             categoryId: Long,
             accountId: Long,
             counterparty: String,
+            note: String,
             excludeFromAssets: Boolean,
             countInStats: Boolean,
+            editedFields: Set<GuardedField>,
         ) -> Unit,
         onIgnore: () -> Unit,
         onDismiss: (DismissSnapshot) -> Unit,
@@ -100,8 +103,8 @@ internal object ConfirmCardWindow {
                 state = state,
                 alreadyEntered = alreadyEntered,
                 askMode = askMode,
-                onConfirm = { amountCents, categoryId, accountId, counterparty, excludeFromAssets, countInStats ->
-                    onConfirm(amountCents, categoryId, accountId, counterparty, excludeFromAssets, countInStats)
+                onConfirm = { amountCents, categoryId, accountId, counterparty, note, excludeFromAssets, countInStats, editedFields ->
+                    onConfirm(amountCents, categoryId, accountId, counterparty, note, excludeFromAssets, countInStats, editedFields)
                 },
                 onIgnore = onIgnore,
                 onDismiss = { handleDismiss() },
@@ -139,6 +142,8 @@ internal object ConfirmCardWindow {
             showingPendingId = pending.id
             dismissCallback = onDismiss
             scheduleAutoDismiss()
+            // 成功展示过一次后，后续通道（页面回填 / 银行动账）只静默富化，不再补弹第二张卡
+            OverlayPromptLog.markShown(pending.dedupKey)
             AppLog.i(TAG, "confirm card shown pending=#${pending.id} ${pending.ruleName}")
             true
         } catch (e: Exception) {
@@ -260,9 +265,11 @@ internal object ConfirmCardWindow {
             categoryId = state.categoryId,
             accountId = state.accountId,
             counterparty = state.counterparty,
+            note = state.note,
             excludeFromAssets = state.excludeFromAssets,
             countInStats = state.countInStats,
             edited = state.userEdited,
+            editedFields = state.editedFields,
         )
         if (dismissConfirm()) cb(snapshot)
     }
