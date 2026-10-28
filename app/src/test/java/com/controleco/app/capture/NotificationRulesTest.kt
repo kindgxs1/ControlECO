@@ -25,7 +25,7 @@ class NotificationRulesTest {
         val r = parse(NotificationRules.WECHAT, "微信支付", "微信支付收款0.01元（朋友到账）")!!
         assertEquals(TxType.INCOME, r.type)
         assertEquals(1L, r.amountCents)
-        assertEquals("com.tencent.mm|INCOME|1|${postTime / 60_000}", r.dedupKey)
+        assertEquals("com.tencent.mm|INCOME|1|${postTime / 1_000L}", r.dedupKey)
     }
 
     @Test
@@ -79,7 +79,7 @@ class NotificationRulesTest {
         assertEquals(TxType.INCOME, r.type)
         assertEquals(200L, r.amountCents)
         assertEquals("支付宝·收款/入账", r.ruleName)
-        assertEquals("com.eg.android.AlipayGphone|INCOME|200|${postTime / 60_000}", r.dedupKey)
+        assertEquals("com.eg.android.AlipayGphone|INCOME|200|${postTime / 1_000L}", r.dedupKey)
     }
 
     @Test
@@ -119,7 +119,7 @@ class NotificationRulesTest {
         assertEquals(TxType.EXPENSE, r.type)
         assertEquals(1280L, r.amountCents)
         assertEquals(false, r.isRefund)
-        assertEquals("com.tencent.mm|EXPENSE|1280|${postTime / 60_000}", r.dedupKey)
+        assertEquals("com.tencent.mm|EXPENSE|1280|${postTime / 1_000L}", r.dedupKey)
     }
 
     @Test
@@ -167,7 +167,7 @@ class NotificationRulesTest {
         assertEquals(TxType.EXPENSE, r.type)
         assertEquals(650L, r.amountCents)
         assertEquals(false, r.isRefund)
-        assertEquals("com.tencent.mm|EXPENSE|650|${postTime / 60_000}", r.dedupKey)
+        assertEquals("com.tencent.mm|EXPENSE|650|${postTime / 1_000L}", r.dedupKey)
     }
 
     @Test
@@ -210,7 +210,7 @@ class NotificationRulesTest {
         assertTrue(r.isRefund)
         assertTrue(r.ruleName.contains("退款"))
         // 退款与同额收款去重键不同
-        assertEquals("com.eg.android.AlipayGphone|INCOME|R|1490|${postTime / 60_000}", r.dedupKey)
+        assertEquals("com.eg.android.AlipayGphone|INCOME|R|1490|${postTime / 1_000L}", r.dedupKey)
     }
 
     @Test

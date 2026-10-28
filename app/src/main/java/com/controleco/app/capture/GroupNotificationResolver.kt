@@ -11,7 +11,7 @@ package com.controleco.app.capture
  * 1. "同包 5 分钟内最近通知"式的回退会把 5 分钟前的**无关**支付通知配到当前摘要上，
  *    把旧金额记成新交易；这里把回退窗收紧到 90 秒，且候选必须自身就是一条可解析的账务明细；
  * 2. 候选挑选与判定是纯函数（只有 [NotificationText] 这个数据类，不依赖 Android 框架），可直接单测；
- * 3. 用子通知的 postTime 作为交易时间，与去重键的分钟桶一致。
+ * 3. 用子通知的 postTime 作为交易时间，与去重键的秒级时间桶一致。
  */
 data class NotificationText(
     val key: String,

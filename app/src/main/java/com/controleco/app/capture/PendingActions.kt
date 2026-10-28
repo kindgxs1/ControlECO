@@ -4,6 +4,7 @@ import androidx.room.withTransaction
 import com.controleco.app.data.db.AccBookDatabase
 import com.controleco.app.data.db.MerchantRuleDao
 import com.controleco.app.data.db.PendingDao
+import com.controleco.app.data.db.PendingStatus
 import com.controleco.app.data.db.PendingTransactionEntity
 import com.controleco.app.data.db.RefundMark
 import com.controleco.app.data.db.TransactionDao
@@ -70,10 +71,21 @@ internal object PendingActions {
             }
         } catch (e: Exception) {
             if (e.message?.contains("UNIQUE", ignoreCase = true) == true) {
-                // 已经入过账（重复通知/双通道竞态）：清理残留待确认条目即可
-                pendingDao.deleteById(item.id)
-                AppLog.i("pending", "already recorded, skip duplicate externalId=$externalId")
-                null
+                // 撞唯一约束后必须先确认账目真的存在，才能删条目：
+                // 若撞的是别的约束（账目并没落库），删条目就会变成"条目没了、账也没有"（丢账）。
+                if (txDao.findIdByExternalId(externalId) != null) {
+                    // 已经入过账（重复通知/双通道竞态）：清理残留待确认条目即可
+                    pendingDao.deleteById(item.id)
+                    AppLog.i("pending", "already recorded, skip duplicate externalId=$externalId")
+                    null
+                } else {
+                    AppLog.w(
+                        "pending",
+                        "unique conflict without existing tx, keep pending #${item.id} externalId=$externalId",
+                        e,
+                    )
+                    null
+                }
             } else {
                 throw e
             }
@@ -138,20 +150,56 @@ internal object PendingActions {
         return true
     }
 
-    /** 撤销已入账条目（悬浮卡「忽略」/ 通知「撤销」）：删除交易与对应 AUTO 条目，不留残影 */
-    suspend fun undoEntered(
+    /**
+     * 撤销已入账（悬浮卡「忽略」/「撤销」/ 通知栏「撤销」）：把这笔账**退回待确认**，而不是连捕获一起删掉。
+     *
+     * 单次误触只丢掉一次入账结果，捕获本身仍留在待确认队列 —— 用户可以重新入账，也可以显式丢弃。
+     * 旧实现直接删交易 + 删条目，误触后连"这笔账去哪儿了"都查不到，正是记账丢失的直接原因。
+     *
+     * @param dedupKey 该笔的捕获去重键（= 交易 externalId 的 `NTF:` 后缀）
+     * @param txIdHint 通知栏撤销只带交易 id（键可能已被页面合并改写），键找不到时用它兜底
+     * @param fallbackSourcePackage 条目已被清理时，重建待确认条目用的来源包名
+     * @return true = 之前确实有这笔账（已退回待确认）
+     */
+    suspend fun revertEntered(
         db: AccBookDatabase,
         txDao: TransactionDao,
         pendingDao: PendingDao,
         dedupKey: String,
+        txIdHint: Long = -1L,
+        fallbackSourcePackage: String = "",
     ): Boolean {
-        val externalId = "NTF:$dedupKey"
-        val txId = txDao.findIdByExternalId(externalId)
+        if (dedupKey.isBlank()) return false
+        var reverted = false
         db.withTransaction {
-            if (txId != null) txDao.deleteById(txId)
-            pendingDao.deleteByDedupKey(dedupKey)
+            val tx = txDao.findIdByExternalId("NTF:$dedupKey")?.let { txDao.getById(it) }
+                ?: txIdHint.takeIf { it > 0 }?.let { txDao.getById(it) }
+                ?: return@withTransaction
+            val pending = pendingDao.findByDedupKey(dedupKey)
+            if (pending != null) {
+                // 条目还在（自动入账的 AUTO 条目保留一天）：直接退回待确认，保留用户已改的字段
+                pendingDao.setStatus(pending.id, PendingStatus.PENDING)
+            } else {
+                // 条目已被清理：按交易重建一条待确认，保证撤销后这笔捕获不会凭空消失
+                pendingDao.insert(
+                    PendingTransactionEntity(
+                        type = tx.type,
+                        amountCents = tx.amountCents,
+                        timestamp = tx.timestamp,
+                        counterparty = tx.counterparty,
+                        note = tx.note,
+                        sourcePackage = fallbackSourcePackage,
+                        ruleName = tx.note.ifBlank { "撤销回退" },
+                        dedupKey = dedupKey,
+                        refundMark = tx.refundMark,
+                        flowId = tx.flowId,
+                    ),
+                )
+            }
+            txDao.deleteById(tx.id)
+            reverted = true
         }
-        AppLog.i("pending", "undo entered tx=#$txId externalId=$externalId")
-        return txId != null
+        AppLog.i("pending", "revert entered externalId=NTF:$dedupKey reverted=$reverted")
+        return reverted
     }
 }

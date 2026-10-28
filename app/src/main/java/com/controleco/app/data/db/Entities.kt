@@ -372,7 +372,7 @@ data class PendingTransactionEntity(
     val note: String = "",
     val sourcePackage: String,
     val ruleName: String,
-    /** 去重键：来源包名 + 方向 + 金额 + 分钟级时间 */
+    /** 去重键：来源包名 + 方向 + 金额 + 秒级时间（同一秒内同额同源才算重复） */
     val dedupKey: String,
     val rawNotificationId: Long? = null,
     /** 退款标记：通知捕获的退款到账收入打 REFUND_INCOME，与账单导入口径一致 */

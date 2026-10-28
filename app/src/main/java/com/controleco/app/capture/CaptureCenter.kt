@@ -638,15 +638,14 @@ object CaptureCenter {
         return androidx.core.app.NotificationCompat.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel, "撤销", pi).build()
     }
 
-    /** 通知栏「撤销」入口（CaptureActionReceiver 调用）：删除已入账的那笔 + 对应 AUTO 条目 */
+    /** 通知栏「撤销」入口（CaptureActionReceiver 调用）：把这笔账退回待确认（不连捕获一起删） */
     fun undoEntryFromNotification(txId: Long, dedupKey: String) {
         if (!initialized) return
         scope.launch {
-            runCatching { if (txId > 0) txDao.deleteById(txId) }
-                .onFailure { AppLog.w("Ntf", "undo entry delete failed", it) }
+            val reverted = runCatching {
+                PendingActions.revertEntered(db, txDao, pendingDao, dedupKey, txId)
+            }.onFailure { AppLog.w("Ntf", "undo entry failed", it) }.getOrDefault(false)
             if (dedupKey.isNotBlank()) {
-                pendingDao.deleteByDedupKey(dedupKey)
-                if (dedupKey.isNotBlank()) AppLog.d("pending", "entry removed key=$dedupKey")
                 cancelCaptureNotification(entryNotifId(dedupKey))
                 if (ConfirmCardWindow.showingPendingId > 0 &&
                     ConfirmCardWindow.showingPendingId == pendingIdOfDedup(dedupKey)
@@ -654,8 +653,8 @@ object CaptureCenter {
                     mainHandler.post { ConfirmCardWindow.dismissConfirm() }
                 }
             }
-            toast("已撤销")
-            AppLog.i("Ntf", "undo entry from notification tx=#$txId key=$dedupKey")
+            toast(if (reverted) "已撤销入账，已退回待确认" else "这笔账已不在了")
+            AppLog.i("Ntf", "undo entry from notification tx=#$txId key=$dedupKey reverted=$reverted")
         }
     }
 
@@ -671,7 +670,7 @@ object CaptureCenter {
             } else {
                 pendingDao.deleteByDedupKey(dedupKey)
             }
-            // 条目已丢弃：释放去重键，同分钟桶里的下一笔真实交易可以复用
+            // 条目已丢弃：释放去重键，同一秒桶里的下一笔真实交易可以复用
             if (dedupKey.isNotBlank()) AppLog.d("pending", "pending removed key=$dedupKey")
             cancelCaptureNotification(pendingNotifId(dedupKey))
             if (ConfirmCardWindow.showingPendingId == pendingId) {
@@ -689,7 +688,7 @@ object CaptureCenter {
     }
 
     /**
-     * 把补录金额写回 0 元占位条：重算去重键（保留分钟桶）。
+     * 把补录金额写回 0 元占位条：重算去重键（保留时间桶）。
      * 若新键对应的条目已存在（同笔的完整捕获先到了）→ 删除占位条，以既有条目为准。
      */
     fun applyPendingAmount(pendingId: Long, amountCents: Long, onResult: (AmountUpdateResult) -> Unit) {
@@ -1072,25 +1071,38 @@ object CaptureCenter {
                     pending.type, amountCents, dismissMs = savedStripDismissMs(),
                 ) {
                     scope.launch {
-                        PendingActions.undoEntered(db, txDao, pendingDao, pending.dedupKey)
-                        toast("已撤销")
+                        // 撤销 = 退回待确认（不连捕获一起删）：误触后这笔仍在队列里，可重新入账
+                        val reverted = runCatching {
+                            PendingActions.revertEntered(
+                                db, txDao, pendingDao, pending.dedupKey,
+                                fallbackSourcePackage = pending.sourcePackage,
+                            )
+                        }.onFailure { AppLog.w("Overlay", "undo edited entry failed", it) }.getOrDefault(false)
+                        cancelCaptureNotification(entryNotifId(pending.dedupKey))
+                        toast(if (reverted) "已撤销入账，已退回待确认" else "这笔账已不在了")
                     }
                 }
             }
         }
     }
 
-    /** 已入账卡片的「忽略」：删除这笔账（含 AUTO 条目），一条点击纠错 */
+    /**
+     * 已入账卡片的「忽略」：把这笔账退回待确认（不连捕获一起删）。
+     * 单点误触不再让一笔真实消费直接消失——条目留在待确认队列，可重新入账或显式丢弃。
+     */
     private suspend fun ignoreEntered(pending: PendingTransactionEntity) {
-        val removed = PendingActions.undoEntered(db, txDao, pendingDao, pending.dedupKey)
-        pendingDao.deleteById(pending.id)
+        val reverted = PendingActions.revertEntered(
+            db, txDao, pendingDao, pending.dedupKey,
+            fallbackSourcePackage = pending.sourcePackage,
+        )
         cancelCaptureNotification(entryNotifId(pending.dedupKey))
+        // 退回待确认后允许后续富化再弹一次卡
         OverlayPromptLog.clear(pending.dedupKey)
-        toast(if (removed) "已忽略，这笔未记账" else "这笔已被撤销")
-        AppLog.i("Overlay", "ignored (entry deleted=$removed) #${pending.id} key=${pending.dedupKey}")
+        toast(if (reverted) "已撤销入账，已退回待确认" else "这笔账已不在了")
+        AppLog.i("Overlay", "ignored (entry reverted=$reverted) #${pending.id} key=${pending.dedupKey}")
     }
 
-    /** 卡片确认入账：写账 + 撤销细条 + 撤销即删除该笔 */
+    /** 卡片确认入账：写账 + 撤销细条（撤销 = 退回待确认，不连捕获一起删） */
     private suspend fun confirmFromOverlay(
         pending: PendingTransactionEntity,
         amountCents: Long,
@@ -1122,10 +1134,15 @@ object CaptureCenter {
                 kindType, amountCents, dismissMs = savedStripDismissMs(),
             ) {
                 scope.launch {
-                    runCatching { txDao.deleteById(txId) }
-                        .onSuccess { AppLog.i("Overlay", "undo confirmed entry tx=#$txId") }
-                        .onFailure { AppLog.w("Overlay", "undo failed", it) }
-                    toast("已撤销")
+                    // 撤销 = 退回待确认（不连捕获一起删）：一笔真实消费不会因为一次误触彻底消失
+                    val reverted = runCatching {
+                        PendingActions.revertEntered(
+                            db, txDao, pendingDao, pending.dedupKey, txId,
+                            fallbackSourcePackage = pending.sourcePackage,
+                        )
+                    }.onFailure { AppLog.w("Overlay", "undo failed", it) }.getOrDefault(false)
+                    toast(if (reverted) "已撤销入账，已退回待确认" else "这笔账已不在了")
+                    AppLog.i("Overlay", "undo confirmed entry tx=#$txId reverted=$reverted")
                 }
             }
         }

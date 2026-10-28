@@ -62,8 +62,8 @@ class PaymentPageParserTest {
         assertEquals(PageScene.PAYMENT_SUCCESS, r.scene)
         assertEquals(TradeState.SUCCESS, r.tradeState)
         assertEquals("微信·支付成功页", r.ruleName)
-        // 无交易时间 → 分钟桶用捕获时刻，与通知通道同构
-        assertEquals("com.tencent.mm|EXPENSE|1280|${capturedAt / 60_000}", r.dedupKey)
+        // 无交易时间 → 时间桶用捕获时刻，与通知通道同构
+        assertEquals("com.tencent.mm|EXPENSE|1280|${capturedAt / 1_000L}", r.dedupKey)
     }
 
     @Test
@@ -96,8 +96,8 @@ class PaymentPageParserTest {
         assertEquals(expected, r.txTime)
         assertEquals("4200182202610061234567890", r.orderId)
         assertEquals("微信·账单详情", r.ruleName)
-        // 有交易时间 → 分钟桶对齐交易时间，与该笔支付通知天然去重
-        assertEquals("com.tencent.mm|EXPENSE|12800|${expected / 60_000}", r.dedupKey)
+        // 有交易时间 → 时间桶对齐交易时间，与该笔支付通知天然去重
+        assertEquals("com.tencent.mm|EXPENSE|12800|${expected / 1_000L}", r.dedupKey)
     }
 
     @Test

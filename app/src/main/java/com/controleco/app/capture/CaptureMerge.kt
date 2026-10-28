@@ -274,7 +274,7 @@ internal data class PageMerge(
     val paymentInstrument: String,
 )
 
-/** 去重键解析：包名 | 方向（退款多一段 R）| 金额分 | 分钟桶[@流程标识] */
+/** 去重键解析：包名 | 方向（退款多一段 R）| 金额分 | 秒级时间桶[@流程标识] */
 internal data class DedupKey(
     val packageName: String,
     val type: String,
@@ -310,7 +310,7 @@ internal fun flowIdentityOf(dedupKey: String): String {
 }
 
 /**
- * 去重键换金额：金额待补录回填后重算键（保留来源段/方向段/退款段与分钟桶，只替换金额段）。
+ * 去重键换金额：金额待补录回填后重算键（保留来源段/方向段/退款段与时间桶，只替换金额段）。
  * 返回 null = 键格式不对（调用方放弃重算、按原键处理）。
  */
 internal fun dedupKeyWithAmount(key: String, amountCents: Long): String? {

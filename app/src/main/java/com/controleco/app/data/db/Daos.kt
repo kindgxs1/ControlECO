@@ -696,7 +696,7 @@ interface PendingDao {
     )
     suspend fun findByBankInstance(instanceId: String): PendingTransactionEntity?
 
-    /** 金额待补录回填：写金额并重算去重键（来源段/方向段/分钟桶不变） */
+    /** 金额待补录回填：写金额并重算去重键（来源段/方向段/秒级时间桶不变） */
     @Query("UPDATE pending_transactions SET amountCents = :amountCents, dedupKey = :dedupKey WHERE id = :id")
     suspend fun updateAmountAndKey(id: Long, amountCents: Long, dedupKey: String)
 
@@ -712,6 +712,10 @@ interface PendingDao {
     /** 自动入账条目的合并窗口很短，次日清理（dedupKey 仍是交易的 externalId，删除不影响去重） */
     @Query("DELETE FROM pending_transactions WHERE status = 'AUTO' AND createdAt < :cutoff")
     suspend fun deleteAutoOlderThan(cutoff: Long)
+
+    /** 撤销已入账 / 退回待确认：只改状态，保留条目（用户已改的字段一并保留） */
+    @Query("UPDATE pending_transactions SET status = :status WHERE id = :id")
+    suspend fun setStatus(id: Long, status: PendingStatus)
 
     @Query("DELETE FROM pending_transactions WHERE id = :id")
     suspend fun deleteById(id: Long)
