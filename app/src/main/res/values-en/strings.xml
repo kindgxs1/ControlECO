@@ -4,4 +4,10 @@
     <string name="app_name">ControlECO</string>
     <string name="a11y_service_label">ControlECO 支付页面采集</string>
     <string name="a11y_service_description">Reads text on WeChat/Alipay payment-success and bill-detail pages to extract amount, payee and payment method for bookkeeping. Processed on-device only, never uploaded.</string>
+    <string name="shortcut_quick_add_short">Add</string>
+    <string name="shortcut_quick_add_long">Add a transaction</string>
+    <string name="shortcut_pending_short">Pending</string>
+    <string name="shortcut_pending_long">Pending bills</string>
+    <string name="shortcut_import_short">Import</string>
+    <string name="shortcut_import_long">Import statement (WeChat/Alipay)</string>
 </resources>

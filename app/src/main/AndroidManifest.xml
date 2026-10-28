@@ -10,6 +10,12 @@
     <!-- 银行动账短信：只收新到短信（不读历史、非默认短信应用）；设置里默认关，开启时运行时申请 -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
 
+    <!-- 短信捕获是可选功能（不开启时应用照常可用），声明为非必需硬件：
+         否则 RECEIVE_SMS 会隐含"必须具备电话功能"，平板/ChromeOS 会被应用商店过滤掉 -->
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="false" />
+
     <!-- 打赏页把收款码保存到相册：Android 8/9 写公共 Pictures 需要该权限；10+ 走 MediaStore，不需要 -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"

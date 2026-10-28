@@ -7,8 +7,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,10 +70,13 @@ fun CategoryLogo(categoryName: String, icon: String, size: Dp = 40.dp) {
 @Composable
 private fun ImageLogo(categoryName: String, fileName: String, size: Dp) {
     val context = LocalContext.current
-    val bitmap by produceState<Bitmap?>(initialValue = null, fileName) {
-        value = withContext(Dispatchers.IO) { CategoryIcon.loadImage(context, fileName) }
+    // 用 remember + LaunchedEffect 代替 produceState：语义一致（fileName 变化才重新解码），
+    // 也避开 compose lint 对 produceState 赋值形式的误判（ProduceStateDoesNotAssignValue）。
+    val bitmapState = remember(fileName) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(fileName) {
+        bitmapState.value = withContext(Dispatchers.IO) { CategoryIcon.loadImage(context, fileName) }
     }
-    val bmp = bitmap
+    val bmp = bitmapState.value
     if (bmp != null) {
         Image(
             bitmap = bmp.asImageBitmap(),

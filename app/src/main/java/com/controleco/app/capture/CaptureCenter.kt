@@ -292,10 +292,36 @@ object CaptureCenter {
             .setCategory(androidx.core.app.NotificationCompat.CATEGORY_REMINDER)
             .setAutoCancel(true)
         action?.let { builder.addAction(it) }
-        runCatching {
-            androidx.core.app.NotificationManagerCompat.from(appContext).notify(NOTIF_TAG, notifId, builder.build())
-            AppLog.i("Ntf", "capture notification posted: $title")
-        }.onFailure { AppLog.w("Ntf", "post notification failed", it) }
+        deliverCaptureNotification(notifId, builder)
+        AppLog.i("Ntf", "capture notification posted: $title")
+    }
+
+    /**
+     * 真正把通知交给系统。
+     *
+     * 权限闸门必须与 `notify` 在同一个方法里：Android 13+ 的 POST_NOTIFICATIONS 是运行时权限，
+     * 未授权时 `notify` 只会被系统静默丢弃（不抛异常），而 lint 也会把没有就地检查的调用
+     * 判为 MissingPermission。两条检查都过不去就直接跳过，不发假通知。
+     */
+    private fun deliverCaptureNotification(
+        notifId: Int,
+        builder: androidx.core.app.NotificationCompat.Builder,
+    ) {
+        val nm = androidx.core.app.NotificationManagerCompat.from(appContext)
+        if (!nm.areNotificationsEnabled()) {
+            AppLog.i("Ntf", "notify skipped (notifications disabled by user)")
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                appContext, android.Manifest.permission.POST_NOTIFICATIONS,
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            AppLog.i("Ntf", "notify skipped (POST_NOTIFICATIONS not granted)")
+            return
+        }
+        runCatching { nm.notify(NOTIF_TAG, notifId, builder.build()) }
+            .onFailure { AppLog.w("Ntf", "post notification failed", it) }
     }
 
     /** 待确认入账通知的确定性 id（同一笔被处理时按 id 撤销通知） */
@@ -575,10 +601,7 @@ object CaptureCenter {
                 ).addRemoteInput(remoteInput).build(),
             )
             .addAction(ignoreAction(IgnoreTarget(pendingId, dedupKey)))
-        runCatching {
-            androidx.core.app.NotificationManagerCompat.from(appContext)
-                .notify(NOTIF_TAG, pendingNotifId(dedupKey), builder.build())
-        }.onFailure { AppLog.w("Ntf", "post amount request failed", it) }
+        deliverCaptureNotification(pendingNotifId(dedupKey), builder)
     }
 
     /** 「忽略」action：广播到 CaptureActionReceiver（显式组件、非导出） */

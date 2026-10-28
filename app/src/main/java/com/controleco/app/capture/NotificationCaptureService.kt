@@ -115,12 +115,15 @@ class NotificationCaptureService : NotificationListenerService() {
                 extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
                     ?.forEach { line -> line?.toString()?.trim()?.takeIf { it.isNotBlank() }?.let { add(it) } }
             }
-            runCatching {
-                extras.getParcelableArray(Notification.EXTRA_MESSAGES)?.let { parcels ->
-                    Notification.MessagingStyle.Message.getMessagesFromBundleArray(parcels)
-                        .forEach { message ->
-                            message.text?.toString()?.trim()?.takeIf { it.isNotBlank() }?.let { add(it) }
-                        }
+            // EXTRA_MESSAGES 的解析入口 getMessagesFromBundleArray 是 API 30 才公开的接口
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                runCatching {
+                    extras.getParcelableArray(Notification.EXTRA_MESSAGES)?.let { parcels ->
+                        Notification.MessagingStyle.Message.getMessagesFromBundleArray(parcels)
+                            .forEach { message ->
+                                message.text?.toString()?.trim()?.takeIf { it.isNotBlank() }?.let { add(it) }
+                            }
+                    }
                 }
             }
         }

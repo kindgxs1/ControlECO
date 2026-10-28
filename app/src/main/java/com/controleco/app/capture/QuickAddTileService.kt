@@ -1,5 +1,6 @@
 package com.controleco.app.capture
 
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Intent
 import android.graphics.drawable.Icon
@@ -25,6 +26,12 @@ class QuickAddTileService : TileService() {
         }
     }
 
+    /**
+     * 低版本（< API 34）仍走旧的 Intent 入口：PendingIntent 版本在 API 34 才公开，
+     * 旧版本上调用会 NoSuchMethodError。lint 的 StartActivityAndCollapseDeprecated 是对
+     * "向 34+ 目标版本使用旧入口"的通用告警，这里已按设备版本分流，故显式抑制。
+     */
+    @SuppressLint("StartActivityAndCollapseDeprecated")
     override fun onClick() {
         super.onClick()
         val intent = Intent(this, MainActivity::class.java)
