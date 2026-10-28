@@ -182,7 +182,7 @@ internal object ConfirmCardWindow {
         return wasVisible
     }
 
-    // ---------- 已记入 · 撤销 细条 ----------
+    // ---------- 顶端细条（已记入 · 撤销 / 待确认 · 处理） ----------
 
     /**
      * 确认入账后的非阻塞细条：**屏幕顶端**小条 + 撤销按钮，[dismissMs] 后自动消失。
@@ -193,19 +193,48 @@ internal object ConfirmCardWindow {
         amountCents: Long,
         dismissMs: Long = SAVED_STRIP_DISMISS_MS,
         onUndo: () -> Unit,
+    ): Boolean = showTopStrip(
+        text = "已记入 " + (if (type == TxType.EXPENSE) "支出 " else "收入 ") + Money.formatYuan(amountCents),
+        actionLabel = "撤销",
+        durationMs = clampSavedStripDismissMs(dismissMs),
+        onAction = onUndo,
+    )
+
+    /**
+     * 待确认细条：确认卡没能弹出来时的**可视兜底**。
+     * 不依赖通知权限（通知被关/被拒时用户完全看不到这笔捕获），只在屏幕顶端占一行；
+     * 点「处理」= 直接在应用内弹出确认卡。返回 false = 窗口没弹出来（无悬浮窗权限/被拦截）。
+     */
+    fun showPending(type: TxType, amountCents: Long, counterparty: String, onClick: () -> Unit): Boolean {
+        val who = counterparty.trim().take(12)
+        return showTopStrip(
+            text = "待确认 " + (if (type == TxType.EXPENSE) "支出 " else "收入 ") + Money.formatYuan(amountCents) +
+                (if (who.isNotEmpty()) " · $who" else ""),
+            actionLabel = "处理",
+            durationMs = PENDING_STRIP_DISMISS_MS,
+            onAction = onClick,
+        )
+    }
+
+    /** 顶端细条通用实现（「已记入 · 撤销」与「待确认 · 处理」共用同一套窗口、计时与兜底） */
+    private fun showTopStrip(
+        text: String,
+        actionLabel: String,
+        durationMs: Long,
+        onAction: () -> Unit,
     ): Boolean {
         if (!this::appContext.isInitialized) return false
         removeSavedWindow()
 
-        val duration = clampSavedStripDismissMs(dismissMs)
         val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val host = OverlayComposeHost()
         val view = buildOverlayComposeView(appContext, host) {
             SavedStripContent(
-                text = "已记入 " + (if (type == TxType.EXPENSE) "支出 " else "收入 ") + Money.formatYuan(amountCents),
-                durationMs = duration,
-                onUndo = {
-                    onUndo()
+                text = text,
+                actionLabel = actionLabel,
+                durationMs = durationMs,
+                onAction = {
+                    onAction()
                     removeSavedWindow()
                 },
             )
@@ -235,11 +264,11 @@ internal object ConfirmCardWindow {
             savedHost = host
             val r = Runnable { removeSavedWindow() }
             savedDismiss = r
-            handler.postDelayed(r, duration)
-            AppLog.i(TAG, "saved strip shown at top (${duration}ms)")
+            if (durationMs > 0L) handler.postDelayed(r, durationMs)
+            AppLog.i(TAG, "top strip shown: $actionLabel (${durationMs}ms)")
             true
         } catch (e: Exception) {
-            AppLog.w(TAG, "saved strip addView failed", e)
+            AppLog.w(TAG, "top strip addView failed", e)
             runCatching { host.destroy() }
             false
         }
@@ -327,9 +356,12 @@ internal object ConfirmCardWindow {
     private fun dp(value: Int): Int =
         (value * appContext.resources.displayMetrics.density).toInt()
 
-    /** 状态栏高度：顶端悬浮条必须落在状态栏下方，否则会被系统图标/刘海盖住 */
+    /**
+     * 状态栏高度：顶端悬浮条必须落在状态栏下方，否则会被系统图标/刘海盖住。
+     * 取不到系统 dimen 时回落到 28dp（常见状态栏高度），避免细条贴到屏幕最上沿。
+     */
     private fun statusBarHeight(): Int = runCatching {
         val id = appContext.resources.getIdentifier("status_bar_height", "dimen", "android")
-        if (id > 0) appContext.resources.getDimensionPixelSize(id) else 0
-    }.getOrDefault(0)
+        if (id > 0) appContext.resources.getDimensionPixelSize(id) else dp(28)
+    }.getOrDefault(dp(28))
 }

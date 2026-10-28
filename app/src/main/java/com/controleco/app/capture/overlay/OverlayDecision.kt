@@ -23,6 +23,12 @@ internal const val SAVED_STRIP_DISMISS_MS = 6_000L
 /** 设置里可选的撤销条停留时长（毫秒） */
 internal val SAVED_STRIP_DISMISS_OPTIONS_MS = listOf(3_000L, 6_000L, 10_000L, 15_000L, 30_000L)
 
+/**
+ * 「待确认 · 处理」细条的停留时长：确认卡没能弹出来时的可视兜底。
+ * 比已记入细条长一些——用户需要时间看到并点开处理。
+ */
+internal const val PENDING_STRIP_DISMISS_MS = 10_000L
+
 /** 撤销条停留时长的合法区间（设置值异常时回落到默认，避免 0/负值把细条瞬间收掉） */
 internal fun clampSavedStripDismissMs(ms: Long): Long =
     if (ms in 1_000L..60_000L) ms else SAVED_STRIP_DISMISS_MS

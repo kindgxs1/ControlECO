@@ -377,6 +377,53 @@ object CaptureCenter {
             pendingId = pendingId,
             forceNotify = isOverlayConfirmEnabled(),
         )
+        // 通知权限被拒/「入账提醒」关着时用户完全看不到这笔捕获（账单页也不会出现待确认记录）——
+        // 屏幕顶端再给一条「待确认 · 处理」细条，点它直接在应用内弹出确认卡。
+        // 细条同样依赖悬浮窗权限，无权限时静默失败；两条兜底互不影响。
+        if (pendingId > 0 && lastPendingStripId != pendingId && canDrawOverlays()) {
+            lastPendingStripId = pendingId
+            mainHandler.post {
+                ConfirmCardWindow.showPending(type, amountCents, counterparty) { showPendingCard(pendingId) }
+            }
+        }
+    }
+
+    /** 最近一次用「待确认」细条提示过的条目 id（避免同一笔反复弹条打断用户） */
+    private var lastPendingStripId: Long = -1L
+
+    /**
+     * 点按「待确认 · 处理」细条 → 立刻在应用内弹出确认卡。
+     * 不等待 [OVERLAY_DELAY_MS]、不要求前台匹配：用户已经明确要处理这笔。
+     * 卡片仍弹不出来（无悬浮窗权限 / 锁屏 / 系统拦截）时给一条 Toast，引导进待确认列表。
+     */
+    private fun showPendingCard(pendingId: Long) {
+        scope.launch {
+            val pending = pendingDao.getById(pendingId)
+            if (pending == null) {
+                toast("这条已处理")
+                return@launch
+            }
+            val categories = categoryDao.getAll()
+            val accounts = accountDao.getAll()
+            val learned = merchantRuleDao.getAll()
+            val alreadyEntered = pending.status == PendingStatus.AUTO
+            val shown = showCardOnMain(
+                pending, categories, accounts, learned,
+                alreadyEntered = alreadyEntered,
+                askMode = pending.status == PendingStatus.ASK,
+                isRefund = pending.refundMark == RefundMark.REFUND_INCOME,
+                sourceLabel = NotificationRules.sourceLabelOrRule(pending.sourcePackage, pending.ruleName),
+                counterparty = pending.counterparty,
+                dedupKey = pending.dedupKey,
+            )
+            if (shown) {
+                cancelCaptureNotification(
+                    if (alreadyEntered) entryNotifId(pending.dedupKey) else pendingNotifId(pending.dedupKey),
+                )
+            } else {
+                toast("悬浮窗不可用，请到待确认列表处理")
+            }
+        }
     }
 
     /**

@@ -1093,14 +1093,17 @@ private fun SubCategoryPanel(
 }
 
 /**
- * 「已记入 支出 ¥20.06 · 撤销」细条（非阻塞，悬浮在屏幕顶端，[durationMs] 后自动消失）。
+ * 顶端细条（非阻塞，悬浮在屏幕顶端，[durationMs] 后自动消失）：
+ * - 「已记入 支出 ¥20.06 · 撤销」：确认入账后的反馈 + 反悔入口；
+ * - 「待确认 支出 ¥20.06 · 美团 · 处理」：确认卡弹不出来时的可视兜底，点按直接弹卡。
  * 进度条与窗口收起时长共用同一个值（设置里可调）
  */
 @Composable
 internal fun SavedStripContent(
     text: String,
-    onUndo: () -> Unit,
+    onAction: () -> Unit,
     durationMs: Long = SAVED_STRIP_DISMISS_MS,
+    actionLabel: String = "撤销",
 ) {
     val c = MaterialTheme.eco
     val progress = remember { Animatable(0f) }
@@ -1144,7 +1147,7 @@ internal fun SavedStripContent(
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.width(6.dp))
-            EcoTextAction(text = "撤销", onClick = onUndo, color = c.blue)
+            EcoTextAction(text = actionLabel, onClick = onAction, color = c.blue)
         }
         // 与原型一致：底部 2dp 细进度条，按窗口的自动收起时长走完
         Box(
