@@ -191,6 +191,7 @@ fun HomeScreen(
     vm: LedgerViewModel,
     onOpenCategories: () -> Unit,
     onOpenAccounts: () -> Unit,
+    onOpenUnbudgeted: () -> Unit,
 ) {
     val c = MaterialTheme.eco
     val budgetCents by vm.monthlyBudgetCents.collectAsStateWithLifecycle()
@@ -509,6 +510,7 @@ fun HomeScreen(
                             period = period,
                             today = today,
                             bars = bars,
+                            onOpenUnbudgeted = onOpenUnbudgeted,
                         )
                     } else {
                         ModeNeedsBudget(dailyMode = dailyBudgetMode, title = "分类预算", onSetBudget = { showBudgetSheet = true })
@@ -1030,6 +1032,7 @@ private fun ModeCategories(
     period: MonthPeriod,
     today: LocalDate,
     bars: List<CategoryBarData>,
+    onOpenUnbudgeted: () -> Unit,
 ) {
     val c = MaterialTheme.eco
     val allocatableCents = budgetCents - categoryBudgetCents
@@ -1078,7 +1081,13 @@ private fun ModeCategories(
                     turn = if (index % 2 == 0) 2.2f else -2.2f,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    CategoryBarRow(bar, index = index, compact = bars.size >= 6, dense = bars.size >= 8)
+                    CategoryBarRow(
+                        bar,
+                        index = index,
+                        compact = bars.size >= 6,
+                        dense = bars.size >= 8,
+                        onClick = if (bar.isOther) onOpenUnbudgeted else null,
+                    )
                 }
             }
             if (bars.isEmpty()) {
@@ -1122,7 +1131,7 @@ private fun MonthProgress(period: MonthPeriod, today: LocalDate) {
 }
 
 @Composable
-private fun CategoryBarRow(bar: CategoryBarData, index: Int, compact: Boolean, dense: Boolean) {
+private fun CategoryBarRow(bar: CategoryBarData, index: Int, compact: Boolean, dense: Boolean, onClick: (() -> Unit)?) {
     val c = MaterialTheme.eco
     val tint = if (bar.isOther) {
         c.amber
@@ -1148,6 +1157,7 @@ private fun CategoryBarRow(bar: CategoryBarData, index: Int, compact: Boolean, d
     Column(
         Modifier
             .fillMaxWidth()
+            .then(if (onClick != null) Modifier.ecoPressable(onClick = onClick) else Modifier)
             .heightIn(min = if (dense) 58.dp else if (compact) 64.dp else 70.dp)
             .padding(vertical = 5.dp),
     ) {

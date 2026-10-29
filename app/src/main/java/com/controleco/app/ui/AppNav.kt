@@ -79,6 +79,7 @@ import com.controleco.app.ui.transactions.EditTransactionScreen
 import com.controleco.app.ui.transactions.QuickAddScreen
 import com.controleco.app.ui.transactions.TransactionListScreen
 import com.controleco.app.ui.transactions.TransactionSearchScreen
+import com.controleco.app.ui.transactions.UnbudgetedBillsScreen
 
 @Composable
 fun AccBookNav(
@@ -206,6 +207,7 @@ fun AccBookNav(
                 onOpenReward = { navController.navigate("reward") },
                 onOpenCalendar = { navController.navigate("calendar") },
                 onOpenSearch = { navController.navigate("search") },
+                onOpenUnbudgeted = { navController.navigate("unbudgeted") },
                 onOpenPlan = { navController.navigate("plan") },
                 onOpenBudget = { navController.navigate("budget") },
                 onOpenDeposit = { navController.navigate("deposit") },
@@ -226,6 +228,13 @@ fun AccBookNav(
         // 账单搜索页：范围是当前会计周期（与账单页同一份 periodRows），结果点行进编辑页
         composable("search") {
             TransactionSearchScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onEditTransaction = { id -> navController.navigate("edit/$id") },
+            )
+        }
+        composable("unbudgeted") {
+            UnbudgetedBillsScreen(
                 vm = vm,
                 onBack = { navController.popBackStack() },
                 onEditTransaction = { id -> navController.navigate("edit/$id") },
@@ -359,6 +368,7 @@ private fun MainScaffold(
     onOpenReward: () -> Unit,
     onOpenCalendar: () -> Unit,
     onOpenSearch: () -> Unit,
+    onOpenUnbudgeted: () -> Unit,
     onOpenPlan: () -> Unit,
     onOpenBudget: () -> Unit,
     onOpenDeposit: () -> Unit,
@@ -408,6 +418,7 @@ private fun MainScaffold(
                     onOpenReward = onOpenReward,
                     onOpenCalendar = onOpenCalendar,
                     onOpenSearch = onOpenSearch,
+                    onOpenUnbudgeted = onOpenUnbudgeted,
                     onOpenPlan = onOpenPlan,
                     onOpenBudget = onOpenBudget,
                     onOpenDeposit = onOpenDeposit,
@@ -458,6 +469,7 @@ private fun TabPage(
     onOpenReward: () -> Unit,
     onOpenCalendar: () -> Unit,
     onOpenSearch: () -> Unit,
+    onOpenUnbudgeted: () -> Unit,
     onOpenPlan: () -> Unit,
     onOpenBudget: () -> Unit,
     onOpenDeposit: () -> Unit,
@@ -467,6 +479,7 @@ private fun TabPage(
             vm = vm,
             onOpenCategories = onOpenCategories,
             onOpenAccounts = onOpenAccounts,
+            onOpenUnbudgeted = onOpenUnbudgeted,
         )
         1 -> TransactionListScreen(
             vm = vm,

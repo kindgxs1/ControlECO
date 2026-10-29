@@ -633,6 +633,15 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /**
+     * 全部账单行（不按时间过滤）。搜索页在「跨月时间范围」场景下用它，
+     * 再在内存里按时间/金额/分类筛选；默认仍用 [periodRows]（当前会计周期）。
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val allRows: StateFlow<List<TransactionRow>?> =
+        txDao.observeAllRows()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
      * 统计口径的本期账单行：剔除「不计入账单和收支统计」的记录。
      * 账单列表仍用 [periodRows] 全量（选「否」的那笔要在账单里留一条记录），
      * 图表 / 走势 / 存款这类统计一律用这一条。

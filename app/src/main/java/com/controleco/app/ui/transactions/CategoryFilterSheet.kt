@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -19,6 +21,7 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.controleco.app.data.db.CategoryEntity
 import com.controleco.app.data.db.TxType
 import com.controleco.app.ui.eco.EcoChip
@@ -38,7 +41,10 @@ internal val CategoryIdSetSaver: Saver<Set<Long>, LongArray> = Saver(
 )
 
 /**
- * 分类筛选 sheet（账单页筛选按钮 / 搜索页共用）：按支出/收入分组多选。
+ * 分类筛选 sheet（账单页筛选按钮 / 搜索页共用）。
+ *
+ * **只显示一级分类**：点一级分类 = 选中该一级分类本身（匹配挂在它下面、没有二级的账单）；
+ * **长按一级分类** = 在下方展开它的二级分类列表，可单独勾选。
  *
  * 勾选先在 sheet 内暂存，「应用筛选」才回写；直接关掉 = 放弃本次改动
  * （sheet 铺满屏幕时看不到背后的列表，即时生效反而让人不知道点了什么）。
@@ -55,7 +61,7 @@ internal fun CategoryFilterSheet(
     EcoSheet(
         onDismiss = onDismiss,
         title = "按分类筛选",
-        subtitle = if (picked.isEmpty()) "可多选" else "已选 ${picked.size} 个分类",
+        subtitle = if (picked.isEmpty()) "长按一级分类可选二级" else "已选 ${picked.size} 个分类",
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             if (categories.isEmpty()) {
@@ -90,6 +96,9 @@ private fun CategoryGroup(
 ) {
     if (items.isEmpty()) return
     val c = MaterialTheme.eco
+    val topLevel = items.filter { it.parentId == null }
+    // 展开中的一级分类 id；长按切换，同一级再长按 = 收起
+    var expandedId by remember { mutableStateOf<Long?>(null) }
     Column {
         Text(label, style = EcoType.FieldLabel, color = c.muted)
         Spacer(Modifier.height(6.dp))
@@ -97,8 +106,43 @@ private fun CategoryGroup(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            items.forEach { cat ->
-                EcoChip(text = cat.name, selected = cat.id in picked, onClick = { onToggle(cat.id) })
+            topLevel.forEach { cat ->
+                EcoChip(
+                    text = cat.name,
+                    selected = cat.id in picked,
+                    onClick = { onToggle(cat.id) },
+                    onLongClick = {
+                        expandedId = if (expandedId == cat.id) null else cat.id
+                    },
+                )
+            }
+        }
+        // 展开的二级分类：缩进显示，与一级 chip 区分开
+        val expanded = expandedId
+        if (expanded != null) {
+            val children = items.filter { it.parentId == expanded }
+            if (children.isNotEmpty()) {
+                val parentName = topLevel.firstOrNull { it.id == expanded }?.name ?: ""
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "$parentName 的二级分类",
+                    style = EcoType.PageNote.copy(fontSize = 10.sp),
+                    color = c.quiet,
+                )
+                Spacer(Modifier.height(4.dp))
+                FlowRow(
+                    modifier = Modifier.padding(start = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    children.forEach { child ->
+                        EcoChip(
+                            text = child.name,
+                            selected = child.id in picked,
+                            onClick = { onToggle(child.id) },
+                        )
+                    }
+                }
             }
         }
     }

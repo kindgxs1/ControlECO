@@ -189,54 +189,54 @@ class BillFiltersTest {
     fun `搜索_一项都没填时不返回全量`() {
         val q = BillSearchQuery()
         assertFalse(q.isActive)
-        assertEquals(0, searchBills(rows, q).size)
+        assertEquals(0, searchBills(rows, q, 0L, Long.MAX_VALUE).size)
     }
 
     @Test
     fun `搜索_只填关键字`() {
         val q = BillSearchQuery(keyword = "瑞幸")
         assertTrue(q.isActive)
-        assertEquals(listOf(1L, 2L), searchBills(rows, q).map { it.id })
+        assertEquals(listOf(1L, 2L), searchBills(rows, q, 0L, Long.MAX_VALUE).map { it.id })
     }
 
     @Test
     fun `搜索_关键字加金额是AND`() {
         val q = BillSearchQuery(keyword = "瑞幸", amount = amountQueryOf(AmountMode.EXACT, "12.5", "", ""))
-        assertEquals(listOf(1L), searchBills(rows, q).map { it.id })
+        assertEquals(listOf(1L), searchBills(rows, q, 0L, Long.MAX_VALUE).map { it.id })
     }
 
     @Test
     fun `搜索_金额范围可单独使用`() {
         val q = BillSearchQuery(amount = amountQueryOf(AmountMode.RANGE, "", "30", "50"))
         assertTrue(q.isActive)
-        assertEquals(listOf(2L, 4L), searchBills(rows, q).map { it.id })
+        assertEquals(listOf(2L, 4L), searchBills(rows, q, 0L, Long.MAX_VALUE).map { it.id })
     }
 
     @Test
     fun `搜索_类型与分类可与关键字叠加`() {
         val q = BillSearchQuery(keyword = "咖啡", type = TxFilter.EXPENSE, categoryIds = setOf(1L))
         assertTrue(q.isActive)
-        assertEquals(listOf(1L, 2L), searchBills(rows, q).map { it.id })
+        assertEquals(listOf(1L, 2L), searchBills(rows, q, 0L, Long.MAX_VALUE).map { it.id })
         // 分类不匹配 → 空（关键字命中但分类被排除）
-        assertEquals(0, searchBills(rows, BillSearchQuery(keyword = "咖啡", categoryIds = setOf(2L))).size)
+        assertEquals(0, searchBills(rows, BillSearchQuery(keyword = "咖啡", categoryIds = setOf(2L)), 0L, Long.MAX_VALUE).size)
     }
 
     @Test
     fun `搜索_只用类型或分类也算填了条件`() {
-        assertEquals(listOf(4L), searchBills(rows, BillSearchQuery(type = TxFilter.INCOME)).map { it.id })
-        assertEquals(listOf(1L, 2L), searchBills(rows, BillSearchQuery(categoryIds = setOf(1L))).map { it.id })
+        assertEquals(listOf(4L), searchBills(rows, BillSearchQuery(type = TxFilter.INCOME), 0L, Long.MAX_VALUE).map { it.id })
+        assertEquals(listOf(1L, 2L), searchBills(rows, BillSearchQuery(categoryIds = setOf(1L)), 0L, Long.MAX_VALUE).map { it.id })
     }
 
     @Test
     fun `搜索_结果顺序沿用原列表不倒序`() {
         val q = BillSearchQuery(amount = amountQueryOf(AmountMode.EXACT, "12.5", "", ""))
-        assertEquals(listOf(1L, 3L), searchBills(rows, q).map { it.id })
+        assertEquals(listOf(1L, 3L), searchBills(rows, q, 0L, Long.MAX_VALUE).map { it.id })
     }
 
     @Test
     fun `搜索_商户为空的行不会被关键字命中`() {
         val withBlank = rows + row(9, counterparty = "", amountCents = 1250)
-        assertEquals(listOf(1L, 2L), searchBills(withBlank, BillSearchQuery(keyword = "瑞幸")).map { it.id })
+        assertEquals(listOf(1L, 2L), searchBills(withBlank, BillSearchQuery(keyword = "瑞幸"), 0L, Long.MAX_VALUE).map { it.id })
     }
 
     // ---------- 条件键 ----------

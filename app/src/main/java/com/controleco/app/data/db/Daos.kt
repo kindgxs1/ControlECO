@@ -100,6 +100,35 @@ interface TransactionDao {
     )
     fun observeRows(startMillis: Long, endMillis: Long): Flow<List<TransactionRow>>
 
+    /**
+     * 全部流水（不按时间过滤）。搜索页在「跨月时间范围」场景下用它，再在内存里按时间/金额/分类筛；
+     * 与 [observeRows] 同一套投影与排序（时间倒序），退款记录照常参与。
+     */
+    @Query(
+        """SELECT t.id AS id, t.type AS type, t.amountCents AS amountCents, t.timestamp AS timestamp,
+           t.note AS note, t.counterparty AS counterparty, t.source AS source,
+           c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
+           a.id AS accountId, a.name AS accountName,
+           t.refundMark AS refundMark, t.refundPending AS refundPending,
+           t.countInStats AS countInStats,
+           t.refundLinkId AS refundLinkId,
+           COALESCE(r.totalRefundCents, 0) AS linkedRefundCents,
+           COALESCE(e.amountCents, 0) AS linkedExpenseCents,
+           t.createdAt AS createdAt
+           FROM transactions t
+           JOIN categories c ON t.categoryId = c.id
+           JOIN accounts a ON t.accountId = a.id
+           LEFT JOIN (
+               SELECT refundLinkId, SUM(amountCents) AS totalRefundCents
+               FROM transactions
+               WHERE refundLinkId > 0 AND type = 'INCOME' AND countInStats = 1
+               GROUP BY refundLinkId
+           ) r ON r.refundLinkId = t.id
+           LEFT JOIN transactions e ON e.id = t.refundLinkId AND e.type = 'EXPENSE'
+           ORDER BY t.timestamp DESC, t.id DESC"""
+    )
+    fun observeAllRows(): Flow<List<TransactionRow>>
+
     /** 最早一笔账单的时间戳（存款页「全部显示」用它决定起始月）；没有账单时为 null */
     @Query("SELECT MIN(timestamp) FROM transactions")
     fun observeEarliestTimestamp(): Flow<Long?>

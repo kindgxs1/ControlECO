@@ -14,10 +14,10 @@ import kotlin.math.abs
  *
  * 两个入口共用同一套判定：
  * - 账单页工具条：类型（全部/支出/收入）+ 分类多选，两者 AND；
- * - 搜索页：商户关键字 + 金额（精确/范围）+ 类型 + 分类，四项 AND。
+ * - 搜索页：商户关键字 + 金额（精确/范围）+ 时间（精确/范围）+ 类型 + 分类，全部 AND。
  *
- * 数据源都是 ViewModel 的 `periodRows`（当前会计周期），所以这里**不做时间过滤**：
- * 搜索范围与账单页一致，就是「当前周期内」，不跨月/跨年。
+ * 时间范围：空 = 当前会计周期（数据由调用方用 periodRows 提供）；非空 = 跨月，
+ * 调用方改用 allRows，再由这里按毫秒区间过滤。
  */
 
 /** 收支类型筛选：三段式（全部 / 支出 / 收入），账单页与搜索页共用 */
@@ -78,6 +78,19 @@ internal fun merchantMatches(counterparty: String, keyword: String): Boolean {
 private fun normalizeMerchant(text: String): String =
     text.filterNot { it.isWhitespace() }.lowercase(Locale.ROOT)
 
+/**
+ * 时间范围。[start] / [end] 都是**包含**当天（按本地时区从 00:00 到 23:59:59）。
+ * 精确模式下 start == end。
+ */
+internal data class DateRange(val start: LocalDate, val end: LocalDate)
+
+/** 把日期范围转成「左闭右开」的毫秒区间（本地时区），便于和 [TransactionRow.timestamp] 比较 */
+internal fun DateRange.toMillisRange(zone: ZoneId = ZoneId.systemDefault()): Pair<Long, Long> {
+    val s = start.atStartOfDay(zone).toInstant().toEpochMilli()
+    val e = end.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+    return s to e
+}
+
 /** 金额匹配；条件为空 = 全部命中 */
 internal fun amountMatches(amountCents: Long, query: AmountQuery): Boolean {
     if (!query.isActive) return true
@@ -117,7 +130,10 @@ internal fun applyBillFilters(
 ): List<TransactionRow> = applyCategoryFilter(applyTypeFilter(rows, filter), categoryIds)
 
 /**
- * 搜索页条件：商户关键字 + 金额 + 类型 + 分类，四项 AND。
+ * 搜索页条件：商户关键字 + 金额 + 时间 + 类型 + 分类，全部 AND。
+ *
+ * [dateRange] 为 null = 未显式指定时间，搜索范围就是当前会计周期（调用方用 periodRows）；
+ * 非 null = 跨月（调用方改用 allRows，再由 [searchBills] 按毫秒区间过滤）。
  *
  * [isActive] = 至少填了一项。一项都没填时不展示「当前周期全量」——
  * 那与账单页完全重复，也失去搜索页的意义；页面改为给一句引导文案。
@@ -125,17 +141,30 @@ internal fun applyBillFilters(
 internal data class BillSearchQuery(
     val keyword: String = "",
     val amount: AmountQuery = AmountQuery(),
+    val dateRange: DateRange? = null,
     val type: TxFilter = TxFilter.ALL,
     val categoryIds: Set<Long> = emptySet(),
 ) {
     val isActive: Boolean
-        get() = keyword.isNotBlank() || amount.isActive || type != TxFilter.ALL || categoryIds.isNotEmpty()
+        get() = keyword.isNotBlank() || amount.isActive || dateRange != null ||
+            type != TxFilter.ALL || categoryIds.isNotEmpty()
 }
 
-/** 搜索：先按类型/分类筛，再按商户/金额筛；顺序沿用 DAO 的时间倒序，不做重排 */
-internal fun searchBills(rows: List<TransactionRow>, query: BillSearchQuery): List<TransactionRow> {
+/**
+ * 搜索：先按类型/分类筛，再按时间/商户/金额筛；顺序沿用 DAO 的时间倒序，不做重排。
+ *
+ * [rangeStartMillis] / [rangeEndMillis] 由调用方根据 [BillSearchQuery.dateRange] 计算：
+ * 未指定时间时取当前会计周期边界，指定了则取所选日期。
+ */
+internal fun searchBills(
+    rows: List<TransactionRow>,
+    query: BillSearchQuery,
+    rangeStartMillis: Long,
+    rangeEndMillis: Long,
+): List<TransactionRow> {
     if (!query.isActive) return emptyList()
     return applyBillFilters(rows, query.type, query.categoryIds)
+        .filter { it.timestamp >= rangeStartMillis && it.timestamp < rangeEndMillis }
         .filter { merchantMatches(it.counterparty, query.keyword) && amountMatches(it.amountCents, query.amount) }
 }
 
@@ -153,6 +182,8 @@ internal fun billSearchKey(query: BillSearchQuery, sort: BillSort): String = bui
     append(':').append(query.amount.exactCents)
     append(':').append(query.amount.minCents)
     append(':').append(query.amount.maxCents)
+    append('|').append(query.dateRange?.start)
+    append('-').append(query.dateRange?.end)
     append('|').append(query.categoryIds.sorted().joinToString(","))
     append('|').append(sort.name)
 }
