@@ -78,6 +78,7 @@ import com.controleco.app.ui.stats.StatsScreen
 import com.controleco.app.ui.transactions.EditTransactionScreen
 import com.controleco.app.ui.transactions.QuickAddScreen
 import com.controleco.app.ui.transactions.TransactionListScreen
+import com.controleco.app.ui.transactions.TransactionSearchScreen
 
 @Composable
 fun AccBookNav(
@@ -204,6 +205,7 @@ fun AccBookNav(
                 onOpenAccounts = { navController.navigate("accounts") },
                 onOpenReward = { navController.navigate("reward") },
                 onOpenCalendar = { navController.navigate("calendar") },
+                onOpenSearch = { navController.navigate("search") },
                 onOpenPlan = { navController.navigate("plan") },
                 onOpenBudget = { navController.navigate("budget") },
                 onOpenDeposit = { navController.navigate("deposit") },
@@ -221,6 +223,14 @@ fun AccBookNav(
         composable("budget") { MonthBudgetScreen(vm = vm, onBack = { navController.popBackStack() }) }
         composable("deposit") { DepositScreen(vm = vm, onBack = { navController.popBackStack() }) }
         composable("quickAdd") { QuickAddScreen(vm = vm, onBack = { navController.popBackStack() }) }
+        // 账单搜索页：范围是当前会计周期（与账单页同一份 periodRows），结果点行进编辑页
+        composable("search") {
+            TransactionSearchScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onEditTransaction = { id -> navController.navigate("edit/$id") },
+            )
+        }
         composable("edit/{txId}") { entry ->
             val txId = entry.arguments?.getString("txId")?.toLongOrNull() ?: -1L
             EditTransactionScreen(vm = vm, txId = txId, onBack = { navController.popBackStack() })
@@ -348,6 +358,7 @@ private fun MainScaffold(
     onOpenAccounts: () -> Unit,
     onOpenReward: () -> Unit,
     onOpenCalendar: () -> Unit,
+    onOpenSearch: () -> Unit,
     onOpenPlan: () -> Unit,
     onOpenBudget: () -> Unit,
     onOpenDeposit: () -> Unit,
@@ -396,6 +407,7 @@ private fun MainScaffold(
                     onOpenAccounts = onOpenAccounts,
                     onOpenReward = onOpenReward,
                     onOpenCalendar = onOpenCalendar,
+                    onOpenSearch = onOpenSearch,
                     onOpenPlan = onOpenPlan,
                     onOpenBudget = onOpenBudget,
                     onOpenDeposit = onOpenDeposit,
@@ -445,6 +457,7 @@ private fun TabPage(
     onOpenAccounts: () -> Unit,
     onOpenReward: () -> Unit,
     onOpenCalendar: () -> Unit,
+    onOpenSearch: () -> Unit,
     onOpenPlan: () -> Unit,
     onOpenBudget: () -> Unit,
     onOpenDeposit: () -> Unit,
@@ -459,6 +472,7 @@ private fun TabPage(
             vm = vm,
             onEditTransaction = onEditTransaction,
             onOpenCalendar = onOpenCalendar,
+            onOpenSearch = onOpenSearch,
             scrollToTopTick = reenterTick,
         )
         2 -> StatsScreen(vm = vm, scrollToTopTick = reenterTick)
