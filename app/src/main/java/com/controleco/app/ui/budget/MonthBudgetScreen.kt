@@ -120,6 +120,7 @@ fun MonthBudgetScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 month = month,
                 vm = vm,
                 plan = plan,
+                plans = plans,
                 expenseTop = expenseTop.map { it.id to it.name },
                 globalFallbackCents = globalFallback,
                 globalMonthlyCents = globalMonthly,
@@ -146,6 +147,7 @@ private fun MonthBudgetForm(
     month: YearMonth,
     vm: LedgerViewModel,
     plan: MonthBudgetPlan?,
+    plans: Map<YearMonth, MonthBudgetPlan>,
     expenseTop: List<Pair<Long, String>>,
     globalFallbackCents: Long,
     globalMonthlyCents: Long,
@@ -163,12 +165,42 @@ private fun MonthBudgetForm(
         }
     }
     val c = MaterialTheme.eco
+    // 是否弹「复制历史月」选择器；在"保存"按钮组之前统一声明，便于 form 内部与 sheet 共用
+    var showCopyFromPicker by remember { mutableStateOf(false) }
     // 实时小字：分类预算合计 + 总预算中还能分给分类的剩余
     val categoryTotalCents = expenseTop.sumOf { (id, _) ->
         categoryTexts[id].orEmpty().takeIf { it.isNotBlank() }?.let { Money.parseCents(it) } ?: 0L
     }
     val effectiveTotalCents = totalText.takeIf { it.isNotBlank() }?.let { Money.parseCents(it) } ?: globalFallbackCents
     val allocatableCents = effectiveTotalCents - categoryTotalCents
+
+    /**
+     * 把源月预算拷到当前表单（仅改本地输入，不落库；需点"保存"才生效）。
+     * 源月无预算 → toast 提示；与当前月相同 → 提示"无需复制"。
+     */
+    fun performCopy(srcMonth: YearMonth) {
+        if (srcMonth == month) {
+            EcoToast.show("已是当前月，无需复制", EcoPillTone.Neutral)
+            return
+        }
+        val srcPlan = plans[srcMonth]
+        if (srcPlan == null || (srcPlan.totalCents <= 0L && srcPlan.categoryCents.isEmpty())) {
+            EcoToast.show(
+                "${srcMonth.year} 年 ${srcMonth.monthValue} 月未设置预算",
+                EcoPillTone.Neutral,
+            )
+            return
+        }
+        totalText = srcPlan.totalCents.takeIf { it > 0L }?.let { Money.formatCents(it) } ?: ""
+        // 把源月所有已知分类预算拷过来；未设置的分类保持空串
+        expenseTop.forEach { (id, _) ->
+            val cents = srcPlan.amountOf(id)
+            categoryTexts[id] = if (cents > 0L) Money.formatCents(cents) else ""
+        }
+        EcoToast.show(
+            "已从 ${srcMonth.year}.${srcMonth.monthValue} 复制到 ${month.year}.${month.monthValue}",
+        )
+    }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -234,6 +266,34 @@ private fun MonthBudgetForm(
                             style = EcoType.PageNote.copy(fontSize = 9.sp),
                             color = if (allocatableCents < 0L) c.clay else c.muted,
                             maxLines = 1,
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    // 总预算下方 3 个辅助操作：清空 / 复制上月 / 复制历史月
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        EcoGhostButton(
+                            text = "清空",
+                            onClick = {
+                                totalText = ""
+                                categoryTexts.keys.toList().forEach { categoryTexts[it] = "" }
+                                EcoToast.show("已清空本月预算输入", EcoPillTone.Neutral)
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                        EcoGhostButton(
+                            text = "复制上月",
+                            onClick = {
+                                performCopy(month.minusMonths(1))
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                        EcoGhostButton(
+                            text = "复制历史月",
+                            onClick = { showCopyFromPicker = true },
+                            modifier = Modifier.weight(1f),
                         )
                     }
                 }
@@ -308,5 +368,21 @@ private fun MonthBudgetForm(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
+    }
+
+    // 历史月选择器：选完直接把源月的总预算 + 分类预算拷到当前月（仅填入表单，仍需点"保存"）
+    if (showCopyFromPicker) {
+        PeriodPickerSheet(
+            mode = PeriodMode.MONTH,
+            current = month.minusMonths(1),
+            currentMonth = YearMonth.now(),
+            currentYear = YearMonth.now().year,
+            onSelectMonth = { src ->
+                showCopyFromPicker = false
+                performCopy(src)
+            },
+            onSelectYear = { /* 年份切换交给 PeriodPickerSheet 内部 */ },
+            onDismiss = { showCopyFromPicker = false },
+        )
     }
 }
