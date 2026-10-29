@@ -18,11 +18,21 @@ internal const val OVERLAY_DELAY_MS = 3_000L
 internal const val OVERLAY_AUTO_DISMISS_MS = 60_000L
 
 /** 入账成功提示的停留时长（默认；用户可在设置里调整，见 CaptureCenter.savedStripDismissMs）：
- *  自动入账的「是否修改」弹窗、悬浮卡保存后的「已记入」细条都用这个值。 */
+ *  悬浮卡保存后的「已记入 · 撤销」细条用这个值。 */
 internal const val SAVED_STRIP_DISMISS_MS = 6_000L
 
-/** 设置里可选的入账成功提示停留时长（毫秒） */
+/** 设置里可选的「已记入 · 撤销」细条停留时长（毫秒） */
 internal val SAVED_STRIP_DISMISS_OPTIONS_MS = listOf(3_000L, 6_000L, 10_000L, 15_000L, 30_000L)
+
+/**
+ * 自动入账成功后「已成功记录一笔」提示条的停留时长（默认；设置里可调，见
+ * CaptureCenter.recordedPromptDismissMs）。与 [SAVED_STRIP_DISMISS_MS] 分开控制：
+ * 自动入账没有撤销语义，用户只需一眼确认 + 可选的「修改」入口，默认更短。
+ */
+internal const val RECORDED_PROMPT_DISMISS_MS = 5_000L
+
+/** 设置里可选的「已成功记录一笔」提示条停留时长（毫秒） */
+internal val RECORDED_PROMPT_DISMISS_OPTIONS_MS = listOf(2_000L, 3_000L, 5_000L, 8_000L, 10_000L, 15_000L)
 
 /**
  * 「待确认 · 处理」细条的停留时长：确认卡没能弹出来时的可视兜底。
@@ -30,9 +40,13 @@ internal val SAVED_STRIP_DISMISS_OPTIONS_MS = listOf(3_000L, 6_000L, 10_000L, 15
  */
 internal const val PENDING_STRIP_DISMISS_MS = 10_000L
 
-/** 入账成功提示停留时长的合法区间（设置值异常时回落到默认，避免 0/负值把弹窗瞬间收掉） */
+/** 入账成功提示停留时长的合法区间（设置值异常时回落到默认，避免 0/负值把细条瞬间收掉） */
 internal fun clampSavedStripDismissMs(ms: Long): Long =
     if (ms in 1_000L..60_000L) ms else SAVED_STRIP_DISMISS_MS
+
+/** 「已成功记录一笔」提示条停留时长的合法区间（异常值回落默认） */
+internal fun clampRecordedPromptDismissMs(ms: Long): Long =
+    if (ms in 1_000L..60_000L) ms else RECORDED_PROMPT_DISMISS_MS
 
 /**
  * 前台包名的有效期：无障碍服务只在窗口切换（`TYPE_WINDOW_STATE_CHANGED`）时上报包名。

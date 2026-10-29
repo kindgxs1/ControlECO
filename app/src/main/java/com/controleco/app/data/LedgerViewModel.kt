@@ -1697,12 +1697,22 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _savedStripDismissMs = MutableStateFlow(CaptureCenter.savedStripDismissMs())
 
-    /** 入账成功提示（自动入账弹窗 / 悬浮卡保存后的细条）自动关闭时长（毫秒）：设置里可调 */
+    /** 「已记入 · 撤销」细条（记一笔后）停留时长（毫秒）：设置里可调 */
     val savedStripDismissMs: StateFlow<Long> = _savedStripDismissMs
 
     fun setSavedStripDismissMs(ms: Long) {
         CaptureCenter.setSavedStripDismissMs(ms)
         _savedStripDismissMs.value = CaptureCenter.savedStripDismissMs()
+    }
+
+    private val _recordedPromptDismissMs = MutableStateFlow(CaptureCenter.recordedPromptDismissMs())
+
+    /** 自动入账「已成功记录一笔」提示条停留时长（毫秒）：与撤销条分开控制 */
+    val recordedPromptDismissMs: StateFlow<Long> = _recordedPromptDismissMs
+
+    fun setRecordedPromptDismissMs(ms: Long) {
+        CaptureCenter.setRecordedPromptDismissMs(ms)
+        _recordedPromptDismissMs.value = CaptureCenter.recordedPromptDismissMs()
     }
 
     /** 最近一次弹卡判定（"已弹出"或未弹原因）：权限页展示，排查"为什么没弹卡" */
@@ -2795,6 +2805,9 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         _homeQuickAddEnabled.value = prefs.getBoolean(KEY_HOME_QUICK_ADD, true)
         _homeModeOrder.value = loadHomeModeOrder()
         _subcategoryRollupMode.value = SubcategoryRollupMode.of(prefs.getString(KEY_SUBCAT_ROLLUP, null))
+        // 两个提示条停留时长也要跟着备份还原同步（否则设置页显示的还是还原前的旧值）
+        _savedStripDismissMs.value = CaptureCenter.savedStripDismissMs()
+        _recordedPromptDismissMs.value = CaptureCenter.recordedPromptDismissMs()
     }
 
     private suspend fun mainResult(callback: (String?) -> Unit, message: String?) {

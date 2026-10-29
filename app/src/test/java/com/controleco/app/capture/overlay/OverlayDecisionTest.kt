@@ -287,3 +287,49 @@ class SavedStripDismissTest {
         assertEquals(SAVED_STRIP_DISMISS_MS, clampSavedStripDismissMs(60_001L))
     }
 }
+
+/**
+ * 「已成功记录一笔」提示条与「已记入 · 撤销」细条的停留时长**分开控制**：
+ * 两者各有独立的默认值/可选项/取值校验，互不影响。
+ */
+class RecordedPromptDismissTest {
+
+    @Test
+    fun `默认时长在可选项里`() {
+        assertEquals(5_000L, RECORDED_PROMPT_DISMISS_MS)
+        assertTrue(RECORDED_PROMPT_DISMISS_MS in RECORDED_PROMPT_DISMISS_OPTIONS_MS)
+    }
+
+    @Test
+    fun `可选项都原样保留`() {
+        RECORDED_PROMPT_DISMISS_OPTIONS_MS.forEach { ms ->
+            assertEquals(ms, clampRecordedPromptDismissMs(ms))
+        }
+    }
+
+    @Test
+    fun `异常值回落到默认`() {
+        assertEquals(RECORDED_PROMPT_DISMISS_MS, clampRecordedPromptDismissMs(0L))
+        assertEquals(RECORDED_PROMPT_DISMISS_MS, clampRecordedPromptDismissMs(-1L))
+        assertEquals(RECORDED_PROMPT_DISMISS_MS, clampRecordedPromptDismissMs(999L))
+        assertEquals(RECORDED_PROMPT_DISMISS_MS, clampRecordedPromptDismissMs(60_001L))
+    }
+
+    @Test
+    fun `与撤销条互不干扰`() {
+        // 改「已成功记录一笔」的时长不会把撤销条的默认值带走
+        assertEquals(6_000L, clampSavedStripDismissMs(SAVED_STRIP_DISMISS_MS))
+        assertEquals(5_000L, clampRecordedPromptDismissMs(RECORDED_PROMPT_DISMISS_MS))
+        // 两者都是合法值时各自保留，不会互相覆盖
+        assertEquals(2_000L, clampRecordedPromptDismissMs(2_000L))
+        assertEquals(30_000L, clampSavedStripDismissMs(30_000L))
+    }
+
+    @Test
+    fun `可选项均为正且升序`() {
+        RECORDED_PROMPT_DISMISS_OPTIONS_MS.zipWithNext().forEach { (a, b) ->
+            assertTrue("${a}ms 与 ${b}ms 应递增", b > a)
+        }
+        RECORDED_PROMPT_DISMISS_OPTIONS_MS.forEach { assertTrue(it >= 1_000L) }
+    }
+}

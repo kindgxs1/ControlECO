@@ -45,6 +45,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.BuildConfig
 import com.controleco.app.capture.CaptureAppCatalog
+import com.controleco.app.capture.overlay.RECORDED_PROMPT_DISMISS_OPTIONS_MS
 import com.controleco.app.capture.overlay.SAVED_STRIP_DISMISS_OPTIONS_MS
 import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.ui.common.AnimationPrefs
@@ -130,10 +131,12 @@ fun SettingsScreen(
     val homeModeOrder by vm.homeModeOrder.collectAsStateWithLifecycle()
     val depositStart by vm.depositPlanStartMonth.collectAsStateWithLifecycle()
     val stripDismissMs by vm.savedStripDismissMs.collectAsStateWithLifecycle()
+    val recordedPromptMs by vm.recordedPromptDismissMs.collectAsStateWithLifecycle()
 
     var showModeOrder by remember { mutableStateOf(false) }
     var showDepositStart by remember { mutableStateOf(false) }
     var showStripDuration by remember { mutableStateOf(false) }
+    var showRecordedPromptDuration by remember { mutableStateOf(false) }
     var depositStartDraft by remember { mutableStateOf(YearMonth.now()) }
 
     val listenerGranted = remember(resumeTick) { vm.isListenerGranted() }
@@ -170,10 +173,20 @@ fun SettingsScreen(
                 onCheckedChange = { vm.setAutoEntryEnabled(it) },
             )
             SettingsDivider()
-            // 入账成功提示的停留时长：自动入账的「是否修改」弹窗、悬浮卡保存后的「已记入」细条都按这个时长收起
+            // 两个提示的停留时长分开控制：自动入账的「已成功记录一笔」与记一笔后的「已记入 · 撤销」
             SettingsRow(
-                title = "入账成功提示自动关闭时长",
-                subtitle = "自动入账弹窗与记一笔后的提示停留多久",
+                title = "入账成功提示停留时长",
+                subtitle = "自动入账后「已成功记录一笔」提示条停留多久",
+                icon = EcoIcons.Clock,
+                iconTint = MaterialTheme.eco.blue,
+                trail = "${recordedPromptMs / 1000} 秒",
+                showChevron = true,
+                onClick = { showRecordedPromptDuration = true },
+            )
+            SettingsDivider()
+            SettingsRow(
+                title = "撤销条停留时长",
+                subtitle = "记一笔后「已记入 · 撤销」提示条停留多久",
                 icon = EcoIcons.Clock,
                 iconTint = MaterialTheme.eco.blue,
                 trail = "${stripDismissMs / 1000} 秒",
@@ -442,53 +455,84 @@ fun SettingsScreen(
         }
     }
 
+    if (showRecordedPromptDuration) {
+        PromptDurationSheet(
+            title = "入账成功提示停留时长",
+            subtitle = "自动入账后「已成功记录一笔」提示条停留多久",
+            options = RECORDED_PROMPT_DISMISS_OPTIONS_MS,
+            selectedMs = recordedPromptMs,
+            onPick = {
+                vm.setRecordedPromptDismissMs(it)
+                showRecordedPromptDuration = false
+                EcoToast.show("提示停留 ${it / 1000} 秒")
+            },
+            onDismiss = { showRecordedPromptDuration = false },
+        )
+    }
+
     if (showStripDuration) {
-        val c = MaterialTheme.eco
-        EcoSheet(
+        PromptDurationSheet(
+            title = "撤销条停留时长",
+            subtitle = "记一笔后「已记入 · 撤销」提示条停留多久",
+            options = SAVED_STRIP_DISMISS_OPTIONS_MS,
+            selectedMs = stripDismissMs,
+            onPick = {
+                vm.setSavedStripDismissMs(it)
+                showStripDuration = false
+                EcoToast.show("撤销条停留 ${it / 1000} 秒")
+            },
             onDismiss = { showStripDuration = false },
-            title = "入账成功提示自动关闭时长",
-            subtitle = "自动入账弹窗与记一笔后的提示停留多久",
-        ) {
-            Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                SAVED_STRIP_DISMISS_OPTIONS_MS.forEach { ms ->
-                    val selected = ms == stripDismissMs
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(if (selected) c.blueSoft else c.surface2)
-                            .border(
-                                1.dp,
-                                if (selected) c.blue.copy(alpha = 0.5f) else c.rule,
-                                RoundedCornerShape(12.dp),
-                            )
-                            .clickable {
-                                vm.setSavedStripDismissMs(ms)
-                                showStripDuration = false
-                                EcoToast.show("提示停留 ${ms / 1000} 秒")
-                            }
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "${ms / 1000} 秒",
-                            style = EcoType.RowTitle,
-                            color = c.ink,
-                            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/** 时长选择面板（两个提示条共用同一套交互与样式） */
+@Composable
+private fun PromptDurationSheet(
+    title: String,
+    subtitle: String,
+    options: List<Long>,
+    selectedMs: Long,
+    onPick: (Long) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = MaterialTheme.eco
+    EcoSheet(onDismiss = onDismiss, title = title, subtitle = subtitle) {
+        Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+            options.forEach { ms ->
+                val selected = ms == selectedMs
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (selected) c.blueSoft else c.surface2)
+                        .border(
+                            1.dp,
+                            if (selected) c.blue.copy(alpha = 0.5f) else c.rule,
+                            RoundedCornerShape(12.dp),
                         )
-                        if (selected) {
-                            Icon(
-                                EcoIcons.Check,
-                                contentDescription = null,
-                                tint = c.blue,
-                                modifier = Modifier.size(15.dp),
-                            )
-                        }
+                        .clickable { onPick(ms) }
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "${ms / 1000} 秒",
+                        style = EcoType.RowTitle,
+                        color = c.ink,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (selected) {
+                        Icon(
+                            EcoIcons.Check,
+                            contentDescription = null,
+                            tint = c.blue,
+                            modifier = Modifier.size(15.dp),
+                        )
                     }
-                    if (ms != SAVED_STRIP_DISMISS_OPTIONS_MS.last()) Spacer(Modifier.height(8.dp))
                 }
-                Spacer(Modifier.height(14.dp))
+                if (ms != options.last()) Spacer(Modifier.height(8.dp))
             }
+            Spacer(Modifier.height(14.dp))
         }
     }
 }

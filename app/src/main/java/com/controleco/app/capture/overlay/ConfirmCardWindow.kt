@@ -219,37 +219,39 @@ internal object ConfirmCardWindow {
         )
     }
 
-    // ---------- 自动入账成功弹窗（居中 · 是否修改） ----------
+    // ---------- 自动入账成功提示（置顶细条 · 可修改） ----------
 
     /**
-     * 自动入账成功后的居中弹窗：「已成功记录一笔 · 是否修改」。
-     * - 「修改」= [onModify]（弹出该笔的编辑卡）；「知道了」/ 超时 = 保留这笔（窗口自行消失）。
-     * - [dismissMs] 后自动关闭，时长由设置里的「入账成功提示弹窗自动关闭时长」控制。
+     * 自动入账成功后的**屏幕顶端细条**：「已成功记录一笔 支出 ¥20.06 · 修改」。
+     * - 只保留「修改」一个动作（弹出该笔的编辑卡）；超时自动消失 = 保留这笔。
+     * - 形态与「已记入 · 撤销」细条完全一致（[SavedStripContent]），非阻塞、不抢焦点。
+     * - [dismissMs] 由设置里独立的「已成功记录一笔提示停留时长」控制。
      * 返回 false = 窗口没弹出来（无权限/被拦截），调用方需保留通知兜底。
      */
     fun showRecordedPrompt(
         type: TxType,
         amountCents: Long,
-        dismissMs: Long = SAVED_STRIP_DISMISS_MS,
+        dismissMs: Long = RECORDED_PROMPT_DISMISS_MS,
         onModify: () -> Unit,
     ): Boolean {
         if (!this::appContext.isInitialized) return false
-        val durationMs = clampSavedStripDismissMs(dismissMs)
+        val durationMs = clampRecordedPromptDismissMs(dismissMs)
         removeRecordedWindow()
-        removeSavedWindow() // 互斥：弹窗与顶端细条不同时出现
+        removeSavedWindow() // 互斥：与「已记入 · 撤销」细条不同时出现
 
         val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val host = OverlayComposeHost()
+        val kind = if (type == TxType.EXPENSE) "支出" else "收入"
         val view = buildOverlayComposeView(appContext, host) {
-            RecordedPromptContent(
-                type = type,
-                amountCents = amountCents,
+            SavedStripContent(
+                // Money.formatYuan 自带货币符号，这里不要再拼 ¥（否则出现「¥¥」）
+                text = "已成功记录一笔 $kind ${Money.formatYuan(amountCents)}",
+                actionLabel = "修改",
                 durationMs = durationMs,
-                onModify = {
+                onAction = {
                     removeRecordedWindow()
                     onModify()
                 },
-                onDismiss = { removeRecordedWindow() },
             )
         }
         val params = WindowManager.LayoutParams(
@@ -261,7 +263,9 @@ internal object ConfirmCardWindow {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity = Gravity.CENTER
+            // 与「已记入 · 撤销」细条同一位置：顶端居中，落在状态栏下方
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = statusBarHeight() + dp(8)
             if (Build.VERSION.SDK_INT >= 28) {
                 layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -276,10 +280,10 @@ internal object ConfirmCardWindow {
             val r = Runnable { removeRecordedWindow() }
             recordedDismiss = r
             if (durationMs > 0L) handler.postDelayed(r, durationMs)
-            AppLog.i(TAG, "recorded prompt shown (${durationMs}ms)")
+            AppLog.i(TAG, "recorded strip shown (${durationMs}ms)")
             true
         } catch (e: Exception) {
-            AppLog.w(TAG, "recorded prompt addView failed", e)
+            AppLog.w(TAG, "recorded strip addView failed", e)
             runCatching { host.destroy() }
             false
         }

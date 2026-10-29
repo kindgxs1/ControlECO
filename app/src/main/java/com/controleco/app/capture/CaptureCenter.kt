@@ -10,6 +10,7 @@ import androidx.room.withTransaction
 import com.controleco.app.AccBookApp
 import com.controleco.app.BuildConfig
 import com.controleco.app.capture.overlay.canSyncOverlayEdits
+import com.controleco.app.capture.overlay.clampRecordedPromptDismissMs
 import com.controleco.app.capture.overlay.clampSavedStripDismissMs
 import com.controleco.app.capture.overlay.ConfirmCardWindow
 import com.controleco.app.capture.overlay.DismissOutcome
@@ -18,6 +19,7 @@ import com.controleco.app.capture.overlay.effectiveForegroundPackage
 import com.controleco.app.capture.overlay.OVERLAY_DELAY_MS
 import com.controleco.app.capture.overlay.OverlayConditions
 import com.controleco.app.capture.overlay.OverlayPromptLog
+import com.controleco.app.capture.overlay.RECORDED_PROMPT_DISMISS_MS
 import com.controleco.app.capture.overlay.SAVED_STRIP_DISMISS_MS
 import com.controleco.app.capture.overlay.shouldShowOverlay
 import com.controleco.app.capture.NotificationRules.ParsedNotification
@@ -91,6 +93,7 @@ object CaptureCenter {
     private const val KEY_SMS_CAPTURE_ENABLED = "sms_capture_enabled"
     private const val KEY_OVERLAY_CONFIRM_ENABLED = "overlay_confirm_enabled"
     private const val KEY_SAVED_STRIP_DISMISS_MS = "saved_strip_dismiss_ms"
+    private const val KEY_RECORDED_PROMPT_DISMISS_MS = "recorded_prompt_dismiss_ms"
     private const val KEY_AMOUNT_REPLY_ENABLED = "amount_reply_enabled"
     private const val KEY_NEEDS_REAUTH = "needs_reauth_after_update"
     private const val KEY_LAST_VERSION_CODE = "last_version_code"
@@ -446,8 +449,8 @@ object CaptureCenter {
         ) {
             return
         }
-        // 自动入账：账已记好，居中弹「已成功记录一笔 · 是否修改」弹窗（可直接进编辑卡）。
-        // 弹窗弹不出来（无权限/被拦截）才回落通知，避免同一笔既弹窗又弹通知。
+        // 自动入账：账已记好，屏幕顶端弹一条「已成功记录一笔 · 修改」细条（非阻塞，可直接进编辑卡）。
+        // 细条弹不出来（无权限/被拦截）才回落通知，避免同一笔既弹条又弹通知。
         if (isAutoEntryEnabled() && !appInForeground && canDrawOverlays() &&
             showRecordedPrompt(entered.pendingId, type, amountCents)
         ) {
@@ -461,10 +464,10 @@ object CaptureCenter {
     }
 
     /**
-     * 自动入账后居中弹「已成功记录一笔 · 是否修改」弹窗（WindowManager 必须在主线程操作）。
+     * 自动入账后在**屏幕顶端**弹「已成功记录一笔 · 修改」细条（WindowManager 必须在主线程操作）。
      * 返回 false = 窗口没弹出来，调用方回落通知。
      * 点「修改」= 弹出该笔的编辑卡（复用 showPendingCard，自动识别已入账态）；
-     * 点「知道了」/ 超时 = 保留这笔不动。
+     * 超时自动消失 = 保留这笔不动。停留时长与「已记入 · 撤销」细条分开控制。
      */
     private suspend fun showRecordedPrompt(
         pendingId: Long,
@@ -474,7 +477,7 @@ object CaptureCenter {
         ConfirmCardWindow.showRecordedPrompt(
             type = type,
             amountCents = amountCents,
-            dismissMs = savedStripDismissMs(),
+            dismissMs = recordedPromptDismissMs(),
             onModify = {
                 if (pendingId > 0) showPendingCard(pendingId) else toast("这笔已无法修改")
             },
@@ -836,7 +839,7 @@ object CaptureCenter {
 
     fun canDrawOverlays(): Boolean = initialized && Settings.canDrawOverlays(appContext)
 
-    /** 入账成功提示（自动入账弹窗 / 悬浮卡保存后的细条）自动关闭时长（毫秒，默认 6 秒；设置里可调，异常值回落默认） */
+    /** 「已记入 · 撤销」细条停留时长（毫秒，默认 6 秒；设置里可调，异常值回落默认） */
     fun savedStripDismissMs(): Long =
         if (!initialized) {
             SAVED_STRIP_DISMISS_MS
@@ -848,6 +851,22 @@ object CaptureCenter {
         val v = clampSavedStripDismissMs(ms)
         if (initialized) prefs().edit().putLong(KEY_SAVED_STRIP_DISMISS_MS, v).apply()
         AppLog.i("Overlay", "savedStripDismissMs=$v")
+    }
+
+    /** 自动入账「已成功记录一笔」提示条停留时长（毫秒，默认 5 秒；与撤销条分开控制，异常值回落默认） */
+    fun recordedPromptDismissMs(): Long =
+        if (!initialized) {
+            RECORDED_PROMPT_DISMISS_MS
+        } else {
+            clampRecordedPromptDismissMs(
+                prefs().getLong(KEY_RECORDED_PROMPT_DISMISS_MS, RECORDED_PROMPT_DISMISS_MS),
+            )
+        }
+
+    fun setRecordedPromptDismissMs(ms: Long) {
+        val v = clampRecordedPromptDismissMs(ms)
+        if (initialized) prefs().edit().putLong(KEY_RECORDED_PROMPT_DISMISS_MS, v).apply()
+        AppLog.i("Overlay", "recordedPromptDismissMs=$v")
     }
 
     /** MainActivity 前台变化：进入前台立即收起卡片（应用内用待确认列表，卡片悬在本应用上会挡操作） */
