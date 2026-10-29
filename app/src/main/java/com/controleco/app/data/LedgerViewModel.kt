@@ -1693,11 +1693,11 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     /** 悬浮窗权限（悬浮确认卡的前提；未授权自动回落通知） */
     fun isOverlayGranted(): Boolean = CaptureCenter.canDrawOverlays()
 
-    // ---------- 撤销条停留时长 ----------
+    // ---------- 入账成功提示自动关闭时长 ----------
 
     private val _savedStripDismissMs = MutableStateFlow(CaptureCenter.savedStripDismissMs())
 
-    /** 「已记入 · 撤销」细条停留时长（毫秒）：设置里可调 */
+    /** 入账成功提示（自动入账弹窗 / 悬浮卡保存后的细条）自动关闭时长（毫秒）：设置里可调 */
     val savedStripDismissMs: StateFlow<Long> = _savedStripDismissMs
 
     fun setSavedStripDismissMs(ms: Long) {

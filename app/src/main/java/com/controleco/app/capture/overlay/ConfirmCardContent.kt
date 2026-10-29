@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -72,8 +73,10 @@ import com.controleco.app.ui.eco.EcoCategoryTile
 import com.controleco.app.ui.eco.EcoField
 import com.controleco.app.ui.eco.EcoHairline
 import com.controleco.app.ui.eco.EcoHandle
+import com.controleco.app.ui.eco.EcoGhostButton
 import com.controleco.app.ui.eco.EcoIconButton
 import com.controleco.app.ui.eco.EcoIconTile
+import com.controleco.app.ui.eco.EcoPane
 import com.controleco.app.ui.eco.EcoPill
 import com.controleco.app.ui.eco.EcoPillTone
 import com.controleco.app.ui.eco.EcoPrimaryButton
@@ -1165,6 +1168,100 @@ internal fun SavedStripContent(
                     .fillMaxHeight()
                     .background(c.blue),
             )
+        }
+    }
+}
+
+/**
+ * 自动入账成功后的居中弹窗：告知"已成功记录一笔"并询问是否修改。
+ * - 「修改」= 弹出该笔的编辑卡（[onModify]）；「知道了」/ 超时 = 保留这笔（[onDismiss]）。
+ * - 底部进度条与窗口自动关闭时长共用同一个值（设置里可调，见 CaptureCenter.savedStripDismissMs）。
+ * 与 [SavedStripContent] 设计语言一致（Eco 卡片 + 蓝色进度条），只是居中、带双按钮。
+ */
+@Composable
+internal fun RecordedPromptContent(
+    type: TxType,
+    amountCents: Long,
+    durationMs: Long = SAVED_STRIP_DISMISS_MS,
+    onModify: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = MaterialTheme.eco
+    val progress = remember { Animatable(0f) }
+    LaunchedEffect(durationMs) {
+        progress.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(
+                durationMillis = durationMs.toInt(),
+                easing = LinearEasing,
+            ),
+        )
+    }
+    val kind = if (type == TxType.EXPENSE) "支出" else "收入"
+    EcoPane(
+        modifier = Modifier.widthIn(min = 280.dp, max = 320.dp),
+        shape = RoundedCornerShape(22.dp),
+        elevation = 18.dp,
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 22.dp),
+    ) {
+        Box(Modifier.fillMaxWidth()) {
+            Column(
+                Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    "已成功记录一笔",
+                    style = EcoType.ModalTitle.copy(fontSize = 17.sp, lineHeight = 22.sp),
+                    color = c.ink,
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "$kind ¥${Money.formatYuan(amountCents)}",
+                    style = EcoType.ConfirmAmount.copy(fontSize = 26.sp, lineHeight = 32.sp),
+                    color = c.blue,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "是否修改？",
+                    style = EcoType.RowSub.copy(fontSize = 12.sp, lineHeight = 16.sp),
+                    color = c.muted,
+                )
+                Spacer(Modifier.height(20.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    EcoGhostButton(
+                        text = "知道了",
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f),
+                    )
+                    EcoPrimaryButton(
+                        text = "修改",
+                        onClick = onModify,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                // 给底部进度条留出空间，避免压住按钮
+                Spacer(Modifier.height(14.dp))
+            }
+            // 底部进度条：按自动关闭时长走完，与顶端撤销细条一致
+            Box(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, bottom = 10.dp)
+                    .height(2.dp)
+                    .clip(CircleShape)
+                    .background(c.track),
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(progress.value)
+                        .fillMaxHeight()
+                        .background(c.blue),
+                )
+            }
         }
     }
 }

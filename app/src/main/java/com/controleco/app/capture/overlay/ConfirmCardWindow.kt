@@ -45,9 +45,12 @@ internal object ConfirmCardWindow {
     private var confirmHost: OverlayComposeHost? = null
     private var savedView: ComposeView? = null
     private var savedHost: OverlayComposeHost? = null
+    private var recordedView: ComposeView? = null
+    private var recordedHost: OverlayComposeHost? = null
 
     private var autoDismiss: Runnable? = null
     private var savedDismiss: Runnable? = null
+    private var recordedDismiss: Runnable? = null
     private var dismissCallback: ((DismissSnapshot) -> Unit)? = null
 
     /** 卡片当前展示的待确认条目 id（-1 = 未展示） */
@@ -61,7 +64,7 @@ internal object ConfirmCardWindow {
         appContext = context.applicationContext
     }
 
-    fun isVisible(): Boolean = confirmView != null || savedView != null
+    fun isVisible(): Boolean = confirmView != null || savedView != null || recordedView != null
 
     // ---------- 确认卡 ----------
 
@@ -216,6 +219,72 @@ internal object ConfirmCardWindow {
         )
     }
 
+    // ---------- 自动入账成功弹窗（居中 · 是否修改） ----------
+
+    /**
+     * 自动入账成功后的居中弹窗：「已成功记录一笔 · 是否修改」。
+     * - 「修改」= [onModify]（弹出该笔的编辑卡）；「知道了」/ 超时 = 保留这笔（窗口自行消失）。
+     * - [dismissMs] 后自动关闭，时长由设置里的「入账成功提示弹窗自动关闭时长」控制。
+     * 返回 false = 窗口没弹出来（无权限/被拦截），调用方需保留通知兜底。
+     */
+    fun showRecordedPrompt(
+        type: TxType,
+        amountCents: Long,
+        dismissMs: Long = SAVED_STRIP_DISMISS_MS,
+        onModify: () -> Unit,
+    ): Boolean {
+        if (!this::appContext.isInitialized) return false
+        val durationMs = clampSavedStripDismissMs(dismissMs)
+        removeRecordedWindow()
+        removeSavedWindow() // 互斥：弹窗与顶端细条不同时出现
+
+        val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val host = OverlayComposeHost()
+        val view = buildOverlayComposeView(appContext, host) {
+            RecordedPromptContent(
+                type = type,
+                amountCents = amountCents,
+                durationMs = durationMs,
+                onModify = {
+                    removeRecordedWindow()
+                    onModify()
+                },
+                onDismiss = { removeRecordedWindow() },
+            )
+        }
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.CENTER
+            if (Build.VERSION.SDK_INT >= 28) {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+
+        return try {
+            wm.addView(view, params)
+            host.attach()
+            recordedView = view
+            recordedHost = host
+            val r = Runnable { removeRecordedWindow() }
+            recordedDismiss = r
+            if (durationMs > 0L) handler.postDelayed(r, durationMs)
+            AppLog.i(TAG, "recorded prompt shown (${durationMs}ms)")
+            true
+        } catch (e: Exception) {
+            AppLog.w(TAG, "recorded prompt addView failed", e)
+            runCatching { host.destroy() }
+            false
+        }
+    }
+
     /** 顶端细条通用实现（「已记入 · 撤销」与「待确认 · 处理」共用同一套窗口、计时与兜底） */
     private fun showTopStrip(
         text: String,
@@ -278,6 +347,7 @@ internal object ConfirmCardWindow {
     fun dismissAll() {
         removeConfirmWindow()
         removeSavedWindow()
+        removeRecordedWindow()
     }
 
     // ---------- 内部 ----------
@@ -343,6 +413,17 @@ internal object ConfirmCardWindow {
             .onFailure { AppLog.w(TAG, "remove saved view failed", it) }
         runCatching { savedHost?.destroy() }
         savedHost = null
+    }
+
+    private fun removeRecordedWindow() {
+        recordedDismiss?.let { handler.removeCallbacks(it) }
+        recordedDismiss = null
+        val view = recordedView ?: return
+        recordedView = null
+        runCatching { windowManagerOrNull()?.removeViewImmediate(view) }
+            .onFailure { AppLog.w(TAG, "remove recorded view failed", it) }
+        runCatching { recordedHost?.destroy() }
+        recordedHost = null
     }
 
     /** appContext 未初始化（进程刚拉起、CaptureCenter.init 之前）时返回 null，避免 lateinit 崩溃 */

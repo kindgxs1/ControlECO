@@ -446,10 +446,10 @@ object CaptureCenter {
         ) {
             return
         }
-        // 自动入账：账已记好，在**屏幕顶端**给一条「已记入 · 撤销」细条（与卡片里点「保存」后的反馈一致）。
-        // 细条弹不出来（无权限/被拦截）才回落通知，避免同一笔既弹条又弹通知。
+        // 自动入账：账已记好，居中弹「已成功记录一笔 · 是否修改」弹窗（可直接进编辑卡）。
+        // 弹窗弹不出来（无权限/被拦截）才回落通知，避免同一笔既弹窗又弹通知。
         if (isAutoEntryEnabled() && !appInForeground && canDrawOverlays() &&
-            showSavedStrip(entered.txId, type, amountCents, dedupKey)
+            showRecordedPrompt(entered.pendingId, type, amountCents)
         ) {
             return
         }
@@ -461,20 +461,23 @@ object CaptureCenter {
     }
 
     /**
-     * 在屏幕顶端弹「已记入 · 撤销」细条（WindowManager 必须在主线程操作）。
-     * 返回 false = 窗口没弹出来，调用方回落通知。撤销走通知栏同一条删除逻辑（删账 + 删 AUTO 条目）。
+     * 自动入账后居中弹「已成功记录一笔 · 是否修改」弹窗（WindowManager 必须在主线程操作）。
+     * 返回 false = 窗口没弹出来，调用方回落通知。
+     * 点「修改」= 弹出该笔的编辑卡（复用 showPendingCard，自动识别已入账态）；
+     * 点「知道了」/ 超时 = 保留这笔不动。
      */
-    private suspend fun showSavedStrip(
-        txId: Long,
+    private suspend fun showRecordedPrompt(
+        pendingId: Long,
         type: TxType,
         amountCents: Long,
-        dedupKey: String,
     ): Boolean = withContext(Dispatchers.Main.immediate) {
-        ConfirmCardWindow.showSaved(
+        ConfirmCardWindow.showRecordedPrompt(
             type = type,
             amountCents = amountCents,
             dismissMs = savedStripDismissMs(),
-            onUndo = { undoEntryFromNotification(txId, dedupKey) },
+            onModify = {
+                if (pendingId > 0) showPendingCard(pendingId) else toast("这笔已无法修改")
+            },
         )
     }
 
@@ -833,7 +836,7 @@ object CaptureCenter {
 
     fun canDrawOverlays(): Boolean = initialized && Settings.canDrawOverlays(appContext)
 
-    /** 「已记入 · 撤销」细条停留时长（毫秒，默认 6 秒；设置里可调，异常值回落默认） */
+    /** 入账成功提示（自动入账弹窗 / 悬浮卡保存后的细条）自动关闭时长（毫秒，默认 6 秒；设置里可调，异常值回落默认） */
     fun savedStripDismissMs(): Long =
         if (!initialized) {
             SAVED_STRIP_DISMISS_MS

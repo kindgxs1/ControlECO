@@ -170,10 +170,10 @@ fun SettingsScreen(
                 onCheckedChange = { vm.setAutoEntryEnabled(it) },
             )
             SettingsDivider()
-            // 「已记入 · 撤销」提示条停留多久：悬浮窗保存后、自动入账后都按这个时长收起
+            // 入账成功提示的停留时长：自动入账的「是否修改」弹窗、悬浮卡保存后的「已记入」细条都按这个时长收起
             SettingsRow(
-                title = "撤销条停留时长",
-                subtitle = "记一笔后屏幕顶端的「撤销」提示停留多久",
+                title = "入账成功提示自动关闭时长",
+                subtitle = "自动入账弹窗与记一笔后的提示停留多久",
                 icon = EcoIcons.Clock,
                 iconTint = MaterialTheme.eco.blue,
                 trail = "${stripDismissMs / 1000} 秒",
@@ -446,8 +446,8 @@ fun SettingsScreen(
         val c = MaterialTheme.eco
         EcoSheet(
             onDismiss = { showStripDuration = false },
-            title = "撤销条停留时长",
-            subtitle = "记一笔后屏幕顶端的「撤销」提示停留多久",
+            title = "入账成功提示自动关闭时长",
+            subtitle = "自动入账弹窗与记一笔后的提示停留多久",
         ) {
             Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                 SAVED_STRIP_DISMISS_OPTIONS_MS.forEach { ms ->
@@ -465,7 +465,7 @@ fun SettingsScreen(
                             .clickable {
                                 vm.setSavedStripDismissMs(ms)
                                 showStripDuration = false
-                                EcoToast.show("撤销条停留 ${ms / 1000} 秒")
+                                EcoToast.show("提示停留 ${ms / 1000} 秒")
                             }
                             .padding(horizontal = 14.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
