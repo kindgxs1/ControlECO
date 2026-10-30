@@ -1,5 +1,6 @@
 package com.controleco.app.ui.transactions
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,7 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -20,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.controleco.app.data.db.CategoryEntity
@@ -43,8 +45,8 @@ internal val CategoryIdSetSaver: Saver<Set<Long>, LongArray> = Saver(
 /**
  * 分类筛选 sheet（账单页筛选按钮 / 搜索页共用）。
  *
- * **只显示一级分类**：点一级分类 = 选中该一级分类本身（匹配挂在它下面、没有二级的账单）；
- * **长按一级分类** = 在下方展开它的二级分类列表，可单独勾选。
+ * **只显示一级分类**：点一级分类 = 选中整个分类（其下二级分类的账也算在内）；
+ * 点一级分类后，下方直接展开它的二级分类选择框（无需长按），点二级分类可进一步只看该项。
  *
  * 勾选先在 sheet 内暂存，「应用筛选」才回写；直接关掉 = 放弃本次改动
  * （sheet 铺满屏幕时看不到背后的列表，即时生效反而让人不知道点了什么）。
@@ -56,23 +58,18 @@ internal fun CategoryFilterSheet(
     onApply: (Set<Long>) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val c = MaterialTheme.eco
     var picked by remember(selected) { mutableStateOf(selected) }
     EcoSheet(
         onDismiss = onDismiss,
         title = "按分类筛选",
-        subtitle = if (picked.isEmpty()) "长按一级分类可选二级" else "已选 ${picked.size} 个分类",
+        subtitle = if (picked.isEmpty()) "选一级分类 = 整个分类，选二级 = 只看该项" else "已选 ${picked.size} 个分类",
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             if (categories.isEmpty()) {
-                Text("还没有分类，先到「分类管理」里添加。", style = EcoType.PageNote, color = c.quiet)
+                Text("还没有分类，先到「分类管理」里添加。", style = EcoType.PageNote, color = MaterialTheme.eco.quiet)
             } else {
-                CategoryGroup("支出", categories.filter { it.type == TxType.EXPENSE }, picked) { id ->
-                    picked = picked.toggle(id)
-                }
-                CategoryGroup("收入", categories.filter { it.type == TxType.INCOME }, picked) { id ->
-                    picked = picked.toggle(id)
-                }
+                CategoryGroup("支出", categories.filter { it.type == TxType.EXPENSE }, picked) { picked = it }
+                CategoryGroup("收入", categories.filter { it.type == TxType.INCOME }, picked) { picked = it }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Box(Modifier.weight(1f)) {
@@ -92,12 +89,12 @@ private fun CategoryGroup(
     label: String,
     items: List<CategoryEntity>,
     picked: Set<Long>,
-    onToggle: (Long) -> Unit,
+    onPickedChange: (Set<Long>) -> Unit,
 ) {
     if (items.isEmpty()) return
     val c = MaterialTheme.eco
     val topLevel = items.filter { it.parentId == null }
-    // 展开中的一级分类 id；长按切换，同一级再长按 = 收起
+    // 展开中的一级分类 id；点击一级分类切换，再点一次收起
     var expandedId by remember { mutableStateOf<Long?>(null) }
     Column {
         Text(label, style = EcoType.FieldLabel, color = c.muted)
@@ -107,40 +104,71 @@ private fun CategoryGroup(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             topLevel.forEach { cat ->
+                val children = items.filter { it.parentId == cat.id }
+                val childIds = children.map { it.id }.toSet()
+                val childPicked = childIds.count { it in picked }
                 EcoChip(
-                    text = cat.name,
-                    selected = cat.id in picked,
-                    onClick = { onToggle(cat.id) },
-                    onLongClick = {
-                        expandedId = if (expandedId == cat.id) null else cat.id
+                    // 只选了二级分类时，一级分类也高亮，提示这个分类下有筛选
+                    text = if (childPicked > 0) "${cat.name} ·$childPicked" else cat.name,
+                    selected = cat.id in picked || childPicked > 0,
+                    onClick = {
+                        if (children.isEmpty()) {
+                            onPickedChange(picked.toggle(cat.id))
+                        } else {
+                            // 点一级分类 = 选中整个分类（并清掉该分类下零散的二级选择）；
+                            // 若已选整个分类，再点 = 取消。同时展开/收起二级选择框。
+                            val next = if (cat.id in picked) {
+                                picked - cat.id
+                            } else {
+                                (picked - childIds) + cat.id
+                            }
+                            onPickedChange(next)
+                            expandedId = if (expandedId == cat.id) null else cat.id
+                        }
                     },
                 )
             }
         }
-        // 展开的二级分类：缩进显示，与一级 chip 区分开
+        // 点击一级分类后直接展开的二级选择框：默认选中状态继承一级分类，可单独点选某项收窄
         val expanded = expandedId
         if (expanded != null) {
+            val parent = topLevel.firstOrNull { it.id == expanded }
             val children = items.filter { it.parentId == expanded }
-            if (children.isNotEmpty()) {
-                val parentName = topLevel.firstOrNull { it.id == expanded }?.name ?: ""
+            if (parent != null && children.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
-                Text(
-                    "$parentName 的二级分类",
-                    style = EcoType.PageNote.copy(fontSize = 10.sp),
-                    color = c.quiet,
-                )
-                Spacer(Modifier.height(4.dp))
-                FlowRow(
-                    modifier = Modifier.padding(start = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(c.surface2)
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
                 ) {
-                    children.forEach { child ->
-                        EcoChip(
-                            text = child.name,
-                            selected = child.id in picked,
-                            onClick = { onToggle(child.id) },
-                        )
+                    Text(
+                        "「${parent.name}」的二级分类",
+                        style = EcoType.PageNote.copy(fontSize = 10.sp),
+                        color = c.quiet,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        children.forEach { child ->
+                            EcoChip(
+                                text = child.name,
+                                selected = child.id in picked,
+                                onClick = {
+                                    // 单独选二级 = 只筛选该二级分类，因此把一级分类从集合里去掉
+                                    onPickedChange(
+                                        if (child.id in picked) {
+                                            picked - child.id
+                                        } else {
+                                            (picked - parent.id) + child.id
+                                        },
+                                    )
+                                },
+                            )
+                        }
                     }
                 }
             }

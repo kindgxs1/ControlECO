@@ -1,5 +1,6 @@
 package com.controleco.app.ui.transactions
 
+import com.controleco.app.data.db.CategoryEntity
 import com.controleco.app.data.db.TransactionRow
 import com.controleco.app.data.db.TxType
 import com.controleco.app.util.Money
@@ -118,16 +119,53 @@ internal fun applyTypeFilter(rows: List<TransactionRow>, filter: TxFilter): List
         TxFilter.INCOME -> rows.filter { it.type == TxType.INCOME }
     }
 
-/** 分类筛选：空集合 = 不筛 */
-internal fun applyCategoryFilter(rows: List<TransactionRow>, categoryIds: Set<Long>): List<TransactionRow> =
-    if (categoryIds.isEmpty()) rows else rows.filter { it.categoryId in categoryIds }
+/**
+ * 把选中的分类 id 展开成「自身 + 全部下级分类」。
+ *
+ * 筛选面板只展示一级分类，勾选一级 = 看这一整个分类；记账时很多账挂在二级分类上，
+ * 因此不能只按一级分类 id 精确匹配，否则会筛出空列表（见 1.0.24 反馈）。
+ * 分类树只有两级，这里仍做逐层展开以兼容历史数据里可能出现的更深层级。
+ */
+internal fun expandCategoryIds(
+    selected: Set<Long>,
+    categories: List<CategoryEntity>,
+): Set<Long> {
+    if (selected.isEmpty() || categories.isEmpty()) return selected
+    val childrenByParent = categories
+        .filter { it.parentId != null }
+        .groupBy { it.parentId!! }
+    val expanded = selected.toMutableSet()
+    var frontier = selected.toList()
+    while (frontier.isNotEmpty()) {
+        val next = mutableListOf<Long>()
+        frontier.forEach { id ->
+            childrenByParent[id].orEmpty().forEach { child ->
+                if (expanded.add(child.id)) next += child.id
+            }
+        }
+        frontier = next
+    }
+    return expanded
+}
+
+/** 分类筛选：空集合 = 不筛；传 [categories] 时一级分类会连同其二级分类一起命中 */
+internal fun applyCategoryFilter(
+    rows: List<TransactionRow>,
+    categoryIds: Set<Long>,
+    categories: List<CategoryEntity> = emptyList(),
+): List<TransactionRow> {
+    if (categoryIds.isEmpty()) return rows
+    val ids = expandCategoryIds(categoryIds, categories)
+    return rows.filter { it.categoryId in ids }
+}
 
 /** 账单页筛选：类型 + 分类（AND） */
 internal fun applyBillFilters(
     rows: List<TransactionRow>,
     filter: TxFilter,
     categoryIds: Set<Long>,
-): List<TransactionRow> = applyCategoryFilter(applyTypeFilter(rows, filter), categoryIds)
+    categories: List<CategoryEntity> = emptyList(),
+): List<TransactionRow> = applyCategoryFilter(applyTypeFilter(rows, filter), categoryIds, categories)
 
 /**
  * 搜索页条件：商户关键字 + 金额 + 时间 + 类型 + 分类，全部 AND。
@@ -161,9 +199,10 @@ internal fun searchBills(
     query: BillSearchQuery,
     rangeStartMillis: Long,
     rangeEndMillis: Long,
+    categories: List<CategoryEntity> = emptyList(),
 ): List<TransactionRow> {
     if (!query.isActive) return emptyList()
-    return applyBillFilters(rows, query.type, query.categoryIds)
+    return applyBillFilters(rows, query.type, query.categoryIds, categories)
         .filter { it.timestamp >= rangeStartMillis && it.timestamp < rangeEndMillis }
         .filter { merchantMatches(it.counterparty, query.keyword) && amountMatches(it.amountCents, query.amount) }
 }

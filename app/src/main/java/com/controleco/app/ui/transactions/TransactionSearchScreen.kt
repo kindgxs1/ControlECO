@@ -151,8 +151,8 @@ fun TransactionSearchScreen(
             categoryIds = categoryIds,
         )
     }
-    val results = remember(rowsReady, query, rangeStart, rangeEnd) {
-        searchBills(rowsReady, query, rangeStart, rangeEnd)
+    val results = remember(rowsReady, query, rangeStart, rangeEnd, categories) {
+        searchBills(rowsReady, query, rangeStart, rangeEnd, categories)
     }
     val sorted = remember(results, sort) { sortBills(results, sort) }
     // 时间排序：按天分组；金额排序：平铺 + 行内补日期（与账单页同一口径）

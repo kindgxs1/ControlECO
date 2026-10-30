@@ -330,8 +330,8 @@ fun TransactionListScreen(
         }
     }
 
-    val filtered = remember(rowsReady, filter, categoryIds) {
-        applyBillFilters(rowsReady, filter, categoryIds)
+    val filtered = remember(rowsReady, filter, categoryIds, categories) {
+        applyBillFilters(rowsReady, filter, categoryIds, categories)
     }
     val sorted = remember(filtered, sort) { sortBills(filtered, sort) }
     // 时间排序：按天分组（吸顶日期头）；金额排序：平铺（行内补日期），要的是整个周期的金额排名

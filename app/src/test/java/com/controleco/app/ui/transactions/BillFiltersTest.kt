@@ -1,5 +1,6 @@
 package com.controleco.app.ui.transactions
 
+import com.controleco.app.data.db.CategoryEntity
 import com.controleco.app.data.db.RefundMark
 import com.controleco.app.data.db.TransactionRow
 import com.controleco.app.data.db.TxSource
@@ -165,6 +166,65 @@ class BillFiltersTest {
         assertEquals(0, applyCategoryFilter(rows, setOf(9L)).size)
     }
 
+    // ---------- 分类展开（一级分类包含二级分类） ----------
+
+    private fun category(id: Long, name: String, parentId: Long? = null) =
+        CategoryEntity(id = id, name = name, type = TxType.EXPENSE, parentId = parentId)
+
+    private val categories = listOf(
+        category(1, "餐饮"),
+        category(2, "早餐", parentId = 1),
+        category(3, "午餐", parentId = 1),
+        category(4, "交通"),
+        category(5, "公交", parentId = 4),
+    )
+
+    @Test
+    fun `选一级分类_自动包含全部二级分类`() {
+        assertEquals(setOf(1L, 2L, 3L), expandCategoryIds(setOf(1L), categories))
+        assertEquals(setOf(4L, 5L), expandCategoryIds(setOf(4L), categories))
+    }
+
+    @Test
+    fun `选二级分类_只保留自身不带上父级`() {
+        assertEquals(setOf(2L), expandCategoryIds(setOf(2L), categories))
+        assertEquals(setOf(2L, 3L), expandCategoryIds(setOf(2L, 3L), categories))
+    }
+
+    @Test
+    fun `展开_空集合与无分类时原样返回`() {
+        assertEquals(emptySet<Long>(), expandCategoryIds(emptySet(), categories))
+        assertEquals(setOf(1L), expandCategoryIds(setOf(1L), emptyList()))
+    }
+
+    @Test
+    fun `分类筛选_选一级分类能筛出挂在二级分类的账`() {
+        val rows = listOf(
+            row(1, categoryId = 2),
+            row(2, categoryId = 3),
+            row(3, categoryId = 5),
+        )
+        // 餐饮（1）下挂早餐/午餐：两笔都应该出现
+        assertEquals(listOf(1L, 2L), applyCategoryFilter(rows, setOf(1L), categories).map { it.id })
+        // 只看午餐（3）：只有一笔
+        assertEquals(listOf(2L), applyCategoryFilter(rows, setOf(3L), categories).map { it.id })
+        // 交通（4）本身没有账，其二级公交（5）有一笔 → 选一级能命中
+        assertEquals(listOf(3L), applyCategoryFilter(rows, setOf(4L), categories).map { it.id })
+        // 只选公交（5）：只命中那一笔
+        assertEquals(listOf(3L), applyCategoryFilter(rows, setOf(5L), categories).map { it.id })
+    }
+
+    @Test
+    fun `账单页筛选_一级分类与类型同时生效`() {
+        val rows = listOf(
+            row(1, type = TxType.EXPENSE, categoryId = 2),
+            row(2, type = TxType.INCOME, categoryId = 3),
+            row(3, type = TxType.EXPENSE, categoryId = 4),
+        )
+        assertEquals(listOf(1L), applyBillFilters(rows, TxFilter.EXPENSE, setOf(1L), categories).map { it.id })
+        assertEquals(listOf(1L, 2L), applyBillFilters(rows, TxFilter.ALL, setOf(1L), categories).map { it.id })
+    }
+
     @Test
     fun `账单页筛选_类型与分类是AND`() {
         val rows = listOf(
@@ -225,6 +285,25 @@ class BillFiltersTest {
     fun `搜索_只用类型或分类也算填了条件`() {
         assertEquals(listOf(4L), searchBills(rows, BillSearchQuery(type = TxFilter.INCOME), 0L, Long.MAX_VALUE).map { it.id })
         assertEquals(listOf(1L, 2L), searchBills(rows, BillSearchQuery(categoryIds = setOf(1L)), 0L, Long.MAX_VALUE).map { it.id })
+    }
+
+    @Test
+    fun `搜索_选一级分类能命中挂在二级分类的账`() {
+        val childRows = listOf(
+            row(1, counterparty = "瑞幸咖啡", categoryId = 2),
+            row(2, counterparty = "星巴克", categoryId = 3),
+            row(3, counterparty = "地铁", categoryId = 4),
+        )
+        val query = BillSearchQuery(categoryIds = setOf(1L))
+        assertEquals(
+            listOf(1L, 2L),
+            searchBills(childRows, query, 0L, Long.MAX_VALUE, categories).map { it.id },
+        )
+        // 只选二级分类：只命中对应那一笔
+        assertEquals(
+            listOf(2L),
+            searchBills(childRows, BillSearchQuery(categoryIds = setOf(3L)), 0L, Long.MAX_VALUE, categories).map { it.id },
+        )
     }
 
     @Test
