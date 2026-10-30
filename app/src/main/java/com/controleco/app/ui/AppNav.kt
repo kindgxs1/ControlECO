@@ -48,7 +48,10 @@ import com.controleco.app.ui.backup.BackupScreen
 import com.controleco.app.ui.budget.MonthBudgetScreen
 import com.controleco.app.ui.calendar.CalendarScreen
 import com.controleco.app.ui.plan.PlanScreen
+import com.controleco.app.ui.common.HelpOnboarding
 import com.controleco.app.ui.common.PermissionReminderDialog
+import com.controleco.app.ui.settings.HelpIntroDialog
+import com.controleco.app.ui.settings.SettingsHelpScreen
 import com.controleco.app.ui.debug.CaptureLogScreen
 import com.controleco.app.ui.debug.CaptureTraceScreen
 import com.controleco.app.ui.deposit.DepositScreen
@@ -95,6 +98,14 @@ fun AccBookNav(
     var permissionMissing by remember {
         mutableStateOf(
             if (promptPermissions && navEvent.second == null) CapturePermissions.missing(context) else emptyList(),
+        )
+    }
+    // 冷启动帮助引导：只问一次；权限提醒还在时不弹，等它清空后再问（见文件末尾的弹窗顺序）
+    var helpPrompt by remember {
+        mutableStateOf(
+            promptPermissions &&
+                navEvent.second == null &&
+                HelpOnboarding.shouldPrompt(context),
         )
     }
     // 去系统设置授权后返回：重查一次，补齐即自动收起
@@ -317,7 +328,13 @@ fun AccBookNav(
             CategoryMappingScreen(vm = vm, onBack = { navController.popBackStack() })
         }
         composable("settings/about") {
-            SettingsAboutScreen(onBack = { navController.popBackStack() })
+            SettingsAboutScreen(
+                onBack = { navController.popBackStack() },
+                onOpenHelp = { navController.navigate("settings/help") },
+            )
+        }
+        composable("settings/help") {
+            SettingsHelpScreen(onBack = { navController.popBackStack() })
         }
 
         composable("keepAlive") {
@@ -342,9 +359,23 @@ fun AccBookNav(
             missing = permissionMissing,
             onOpenPermissions = {
                 permissionMissing = emptyList()
+                // 用户去授权时不再叠加帮助引导；本次未展示，下次冷启动仍可询问
+                helpPrompt = false
                 navController.navigate("settings/permissions")
             },
             onDismiss = { permissionMissing = emptyList() },
+        )
+    }
+
+    // 冷启动帮助引导：权限提醒优先；真正展示时才记「问过」，避免反复骚扰
+    if (helpPrompt && permissionMissing.isEmpty()) {
+        LaunchedEffect(Unit) { HelpOnboarding.markPrompted(context) }
+        HelpIntroDialog(
+            onOpenHelp = {
+                helpPrompt = false
+                navController.navigate("settings/help")
+            },
+            onDismiss = { helpPrompt = false },
         )
     }
 }

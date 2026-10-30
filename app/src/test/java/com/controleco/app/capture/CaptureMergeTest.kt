@@ -920,4 +920,38 @@ class CaptureMergeTest {
         assertEquals("银行动账 招商银行", combineNotes("招商银行", "银行动账 招商银行"))
         assertEquals("银行动账 招商银行", combineNotes("银行动账 招商银行", "招商银行"))
     }
+
+    @Test
+    fun `重复捕获并入不覆盖已有商户与支付工具`() {
+        val existing = pending(counterparty = "美团", note = "订单备注", paymentInstrument = "微信零钱")
+        val merged = mergeDuplicateCapture(existing, "美团外卖", "支付方式 招商银行", "招商银行储蓄卡(2532)")
+        // 已有商户/支付工具不覆盖；备注只追加
+        assertEquals("美团", merged.counterparty)
+        assertTrue(merged.note.contains("订单备注"))
+        assertTrue(merged.note.contains("招商银行"))
+        assertEquals("微信零钱", merged.paymentInstrument)
+        assertTrue(merged.changed)
+    }
+
+    @Test
+    fun `重复捕获补空白商户与备注`() {
+        val existing = pending(counterparty = "", note = "", paymentInstrument = "")
+        val merged = mergeDuplicateCapture(existing, "美团外卖", "订单备注", "招商银行储蓄卡(2532)")
+        assertEquals("美团外卖", merged.counterparty)
+        assertTrue(merged.note.contains("订单备注"))
+        assertEquals("招商银行储蓄卡(2532)", merged.paymentInstrument)
+        assertTrue(merged.changed)
+    }
+
+    @Test
+    fun `用户改过的字段不被重复捕获覆盖`() {
+        val existing = pending(counterparty = "美团", note = "我的备注")
+        val merged = mergeDuplicateCapture(
+            existing, "美团外卖", "另一条备注", "",
+            guarded = setOf(GuardedField.COUNTERPARTY, GuardedField.NOTE),
+        )
+        assertEquals("美团", merged.counterparty)
+        assertEquals("我的备注", merged.note)
+        assertFalse(merged.changed)
+    }
 }

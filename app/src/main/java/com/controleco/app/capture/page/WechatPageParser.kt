@@ -146,8 +146,9 @@ object WechatPageParser : AppPageParser {
             return detailCandidate(snapshot, flow, detailTitle)
         }
 
-        // 10) 支付成功页
-        if (successTitles.any { joined.contains(it) } && !joined.contains("当前状态")) {
+        // 10) 支付成功页：成功文案必须在页面顶部两行（标题区）——避免列表页深处某条
+        //     历史记录含"支付成功"被整页误判成结果页（上游 v1.0.5 修复）
+        if (lines.take(2).any { line -> successTitles.any { line.contains(it) } } && !joined.contains("当前状态")) {
             return successCandidate(snapshot, flow)
         }
 

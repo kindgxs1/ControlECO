@@ -13,6 +13,8 @@ import com.controleco.app.BuildConfig
 import com.controleco.app.capture.AccBookAccessibilityService
 import com.controleco.app.capture.CaptureCenter
 import com.controleco.app.capture.CaptureDefaults
+import com.controleco.app.capture.CaptureResolution
+import com.controleco.app.capture.LogicalTransactions
 import com.controleco.app.capture.NotificationRules
 import com.controleco.app.capture.MerchantRules
 import com.controleco.app.capture.PendingActions
@@ -1947,7 +1949,10 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun discardPending(id: Long) {
         viewModelScope.launch(Dispatchers.IO) {
+            val pending = pendingDao.getById(id)
             PendingActions.discard(pendingDao, id)
+            // 终态记忆：同一笔的迟到重复捕获不再回到待确认队列
+            pending?.let { LogicalTransactions.markResolved(it, CaptureResolution.REJECTED) }
         }
     }
 
@@ -1992,10 +1997,12 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
-            PendingActions.confirm(
+            val txId = PendingActions.confirm(
                 db, txDao, pendingDao, merchantRuleDao, item,
                 categoryId, accountId, counterparty, item.note, item.amountCents, excludeFromAssets, countInStats,
             )
+            // 终态记忆：同笔的迟到重复捕获不再回到待确认队列
+            if (txId != null) LogicalTransactions.markResolved(item, CaptureResolution.HANDLED)
         }
     }
 
@@ -2043,6 +2050,8 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                 items.forEach { pendingDao.deleteById(it.id) }
                 ids.count { it != -1L }
             }
+            // 终态记忆：批量确认后同笔的迟到重复捕获不再回到待确认队列
+            items.forEach { LogicalTransactions.markResolved(it, CaptureResolution.HANDLED) }
             AppLog.i("pending", "confirmAll: ${items.size} items, inserted=$inserted")
         }
     }

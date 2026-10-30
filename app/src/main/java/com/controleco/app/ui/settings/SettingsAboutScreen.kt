@@ -93,7 +93,7 @@ private val LICENSES = listOf(
  * 不下载、不安装。
  */
 @Composable
-fun SettingsAboutScreen(onBack: () -> Unit) {
+fun SettingsAboutScreen(onBack: () -> Unit, onOpenHelp: () -> Unit) {
     val context = LocalContext.current
     var showLicenses by remember { mutableStateOf(false) }
     var checking by remember { mutableStateOf(false) }
@@ -172,6 +172,18 @@ fun SettingsAboutScreen(onBack: () -> Unit) {
                 iconTint = MaterialTheme.eco.violet,
                 showChevron = true,
                 onClick = { showLicenses = true },
+            )
+        }
+
+        SettingsSection(title = "帮助", aside = "HELP")
+        SettingsPane {
+            SettingsRow(
+                title = "帮助与说明",
+                subtitle = "预算口径、自动记账的重复与遗漏处理、常见问题",
+                icon = EcoIcons.Book,
+                iconTint = MaterialTheme.eco.blue,
+                showChevron = true,
+                onClick = onOpenHelp,
             )
         }
 

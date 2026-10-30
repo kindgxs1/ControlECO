@@ -61,6 +61,14 @@ internal data class RelatedPending(
     val sameAmount: Boolean,
 )
 
+/** 重复捕获并入既有条目的结果：只补空白文本，金额/时间/分类/账户保持不变 */
+internal data class DuplicateMerge(
+    val counterparty: String,
+    val note: String,
+    val paymentInstrument: String,
+    val changed: Boolean,
+)
+
 /**
  * 在合并池（待确认 + 自动入账条目）里找同一笔：同包名同方向、捕获时刻在窗口内、**金额相同**，
  * 且流程/通知实例身份不冲突。金额不同一律不合并——"窗口内候选唯一"不能证明是同一笔。
@@ -377,6 +385,47 @@ internal fun mergePageInfo(
         note = if (lockNote) existing.note else mergedNote,
         ruleName = pageRuleName.ifBlank { existing.ruleName },
         paymentInstrument = pageInstrument.ifBlank { existing.paymentInstrument },
+    )
+}
+
+/**
+ * 重复捕获并入既有条目：**只补空白、只追加备注**，金额/时间/分类/账户一律不动。
+ *
+ * 与 [mergePageInfo] 的区别：后者是"页面信息更权威"，这里是"这条我早处理过了"——
+ * 它带来的信息不比既有条目更新。用户改过的字段（[guarded]）直接跳过。
+ */
+internal fun mergeDuplicateCapture(
+    existing: PendingTransactionEntity,
+    incomingCounterparty: String,
+    incomingNote: String,
+    incomingInstrument: String,
+    /** 用户在悬浮卡里改过的字段（[OverlayFieldGuards] 登记）；空 = 全部按自动富化处理 */
+    guarded: Set<GuardedField> = emptySet(),
+): DuplicateMerge {
+    val legacyLock = existing.userEdited
+    val lockCounterparty = legacyLock || GuardedField.COUNTERPARTY in guarded
+    val lockNote = legacyLock || GuardedField.NOTE in guarded
+
+    val usableCounterparty = incomingCounterparty.takeIf {
+        it.isNotBlank() && !PageParseSupport.isAmountLikeNode(it)
+    }
+    val counterparty = when {
+        lockCounterparty || existing.counterparty.isNotBlank() -> existing.counterparty
+        else -> usableCounterparty ?: existing.counterparty
+    }
+    val note = if (lockNote || incomingNote.isBlank()) {
+        existing.note
+    } else {
+        combineNotes(existing.note, incomingNote)
+    }
+    val instrument = existing.paymentInstrument.ifBlank { incomingInstrument }
+    return DuplicateMerge(
+        counterparty = counterparty,
+        note = note,
+        paymentInstrument = instrument,
+        changed = counterparty != existing.counterparty ||
+            note != existing.note ||
+            instrument != existing.paymentInstrument,
     )
 }
 
