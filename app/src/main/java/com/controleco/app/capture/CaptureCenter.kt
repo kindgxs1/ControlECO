@@ -1799,11 +1799,6 @@ object CaptureCenter {
                     captureDao.updateMatch(rawId, parsed.ruleName + "·重复", true)
                     return@launch
                 }
-                // 重复并入：同笔既有条目唯一命中时只补字段，不新建第二笔
-                if (absorbedByExisting(observation, sourceAt)) {
-                    captureDao.updateMatch(rawId, parsed.ruleName + "·并入重复", true)
-                    return@launch
-                }
                 // 入账方式：任一"入账"开关开启即先直接入账（三种方式全关才退回待确认的完全手动模式）
                 if (directEntryEnabled()) {
                     val entered = enterEntry(
@@ -1848,6 +1843,12 @@ object CaptureCenter {
                         )
                         return@launch
                     }
+                }
+                // 重复并入：同笔既有条目唯一命中时只补字段，不新建第二笔
+                // （放在直接入账之后：正常新捕获一定先走"入账 + 悬浮卡/通知"，本步只拦重复的 pending）
+                if (absorbedByExisting(observation, sourceAt)) {
+                    captureDao.updateMatch(rawId, parsed.ruleName + "·并入重复", true)
+                    return@launch
                 }
                 val pendingId = pendingDao.insert(
                     PendingTransactionEntity(
@@ -2078,11 +2079,6 @@ object CaptureCenter {
             captureDao.updateMatch(rawId, ledger.ruleName + "·重复", true)
             return
         }
-        // 重复并入：同笔既有条目唯一命中时只补字段，不新建第二笔
-        if (absorbedByExisting(observation, sourceAt)) {
-            captureDao.updateMatch(rawId, ledger.ruleName + "·并入重复", true)
-            return
-        }
 
         // 入账方式：任一"入账"开关开启即先直接入账（与通知/页面通道同一套口径）
         if (directEntryEnabled()) {
@@ -2133,6 +2129,13 @@ object CaptureCenter {
                 )
                 return
             }
+        }
+
+        // 重复并入：同笔既有条目唯一命中时只补字段，不新建第二笔
+        // （放在直接入账之后：正常新捕获一定先走"入账 + 悬浮卡/通知"，本步只拦重复的 pending）
+        if (absorbedByExisting(observation, sourceAt)) {
+            captureDao.updateMatch(rawId, ledger.ruleName + "·并入重复", true)
+            return
         }
 
         val bankPendingId = pendingDao.insert(
@@ -3071,12 +3074,6 @@ object CaptureCenter {
             return
         }
 
-        // 重复并入：上面的通道专属融合都没命中时，按统一逻辑把同笔并进唯一候选，不再新建待确认
-        if (absorbedByExisting(observation, capturedAt)) {
-            captureDao.updateMatch(rawId, candidate.ruleName + "·并入重复", true)
-            return
-        }
-
         // 页面信息最全：任一入账开关开启即直接入账
         if (directEntryEnabled()) {
             val entered = enterEntry(
@@ -3127,6 +3124,13 @@ object CaptureCenter {
                 )
                 return
             }
+        }
+
+        // 重复并入：同笔既有条目唯一命中时只补字段，不新建第二笔
+        // （放在直接入账之后：正常新捕获一定先走"入账 + 悬浮卡/通知"，本步只拦重复的 pending）
+        if (absorbedByExisting(observation, capturedAt)) {
+            captureDao.updateMatch(rawId, candidate.ruleName + "·并入重复", true)
+            return
         }
 
         // enterEntry 返回 null（最近同额预检命中/无可推测账户）时仍插入 pending：

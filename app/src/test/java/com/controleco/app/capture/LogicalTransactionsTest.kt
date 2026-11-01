@@ -135,4 +135,32 @@ class LogicalTransactionsTest {
             LogicalTransactions.findResolved(observation(base + 10_000), base + 10_000),
         )
     }
+
+    @Test
+    fun sameAppWithoutIdentityIsNotAbsorbed() {
+        // 身份缺失时无法证明是同一笔：同额的第二笔真实消费必须照常弹卡/入账
+        val existing = pending(identity = "")
+        assertNull(
+            LogicalTransactions.findActive(
+                listOf(existing),
+                observation(base + 5_000, identity = ""),
+                base + 5_000,
+            ),
+        )
+        LogicalTransactions.markResolved(existing, CaptureResolution.HANDLED, now = base)
+        assertNull(LogicalTransactions.findResolved(observation(base + 5_000, identity = ""), base + 5_000))
+    }
+
+    @Test
+    fun sameAppDifferentChannelIdentityIsNotAbsorbed() {
+        // 同应用不同通道实例（通知 n: vs 页面 p:）不能仅凭同额判成同一笔
+        val existing = pending(identity = "n:abc")
+        assertNull(
+            LogicalTransactions.findActive(
+                listOf(existing),
+                observation(base + 5_000, identity = "p:xyz"),
+                base + 5_000,
+            ),
+        )
+    }
 }

@@ -325,7 +325,13 @@ internal fun matchesObservedCapture(
         return false
     }
     return sources.any { source ->
-        if (source.sourcePackage == incoming.sourcePackage) return@any true
+        if (source.sourcePackage == incoming.sourcePackage) {
+            // 同应用必须"通道实例身份相同"才能算同一笔（同一条通知/同一次页面流程/同一条银行事件）。
+            // 身份缺失或两边身份不同时无法证明是同一笔，不能按"同包 + 同额"吸收：
+            // 否则同额的两笔真实消费（如两笔 1.00）会被静默吞掉，悬浮窗也不再弹"记一笔"卡片。
+            return@any identityKind(incoming.identity).isNotBlank() &&
+                incoming.identity == source.identity
+        }
         val other = source.evidence.copy(time = firstCapturedAt)
         val current = fresh.copy(time = capturedAt)
         // 支付应用 <-> 商家订单页，保留商户、支付渠道及资金操作冲突判断。
