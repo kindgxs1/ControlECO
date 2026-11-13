@@ -152,6 +152,7 @@ fun AccBookNav(
             route == null -> Unit
             route == CaptureCenter.ROUTE_PENDING -> navController.navigate("pending")
             route == CaptureCenter.ROUTE_REFUND_LINK -> navController.navigate("refundLink")
+            route.startsWith(CaptureCenter.ROUTE_REFUND_LINK + "/") -> navController.navigate(route)
             // 「已记入一笔账」通知：直达该笔记录的编辑页（追加路由：edit/{txId}）
             route.startsWith(CaptureCenter.ROUTE_EDIT_PREFIX) -> navController.navigate(route)
             // 快捷方式/磁贴：直接进快速记账
@@ -258,8 +259,36 @@ fun AccBookNav(
         composable("accounts") { AccountsScreen(vm = vm, onBack = { navController.popBackStack() }) }
         composable("categories") { CategoriesScreen(vm = vm, onBack = { navController.popBackStack() }) }
         composable("import") { ImportScreen(vm = vm, onBack = { navController.popBackStack() }) }
-        composable("pending") { PendingScreen(vm = vm, onBack = { navController.popBackStack() }) }
+        composable("pending") {
+            PendingScreen(
+                vm = vm,
+                onBack = { navController.popBackStack() },
+                onRefund = { pendingId, legacyRefundId ->
+                    when {
+                        pendingId != null -> navController.navigate("refundLink/$pendingId")
+                        legacyRefundId != null -> navController.navigate("refundLegacy/$legacyRefundId")
+                    }
+                },
+            )
+        }
+        // 无参数路由仅作旧通知的安全入口；新捕获退款始终携带 pendingId。
         composable("refundLink") { RefundLinkScreen(vm = vm, onBack = { navController.popBackStack() }) }
+        composable("refundLink/{pendingId}") { entry ->
+            val pendingId = entry.arguments?.getString("pendingId")?.toLongOrNull()
+            RefundLinkScreen(
+                vm = vm,
+                pendingId = pendingId,
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable("refundLegacy/{refundId}") { entry ->
+            val refundId = entry.arguments?.getString("refundId")?.toLongOrNull()
+            RefundLinkScreen(
+                vm = vm,
+                legacyRefundId = refundId,
+                onBack = { navController.popBackStack() },
+            )
+        }
         composable("captureLog") { CaptureLogScreen(vm = vm, onBack = { navController.popBackStack() }) }
         composable("captureTrace") {
             CaptureTraceScreen(

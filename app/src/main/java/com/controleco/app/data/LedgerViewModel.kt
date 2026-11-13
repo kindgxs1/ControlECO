@@ -33,6 +33,7 @@ import com.controleco.app.data.db.CategoryRules
 import com.controleco.app.data.db.CategorySumRow
 import com.controleco.app.data.db.InstallmentPlanEntity
 import com.controleco.app.data.db.PendingTransactionEntity
+import com.controleco.app.data.db.PendingStatus
 import com.controleco.app.data.db.RecurringPlanEntity
 import com.controleco.app.data.db.RefundCategory
 import com.controleco.app.data.db.RefundMark
@@ -721,32 +722,52 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         excludeFromAssets: Boolean = false,
         /** 是否计入账单和收支统计：默认计入；false 时只在账单列表显示，不参与任何统计 */
         countInStats: Boolean = true,
+        onResult: (String?) -> Unit = {},
     ) {
         viewModelScope.launch(Dispatchers.IO) {
-            if (id > 0) {
-                txDao.getById(id)?.let { old ->
-                    txDao.update(
-                        old.copy(
-                            type = type, amountCents = amountCents, categoryId = categoryId,
-                            accountId = accountId, timestamp = timestamp, note = note,
-                            counterparty = counterparty, excludeFromAssets = excludeFromAssets,
-                            countInStats = countInStats,
-                        )
-                    )
-                    // 编辑的是捕获来的交易 → 学习这次归类（"越用越准"；手动记账不学习）
-                    if (old.source != TxSource.MANUAL) {
-                        MerchantRules.learn(merchantRuleDao, type, categoryId, accountId, counterparty, note)
-                    }
-                }
-            } else {
-                txDao.insert(
-                    TransactionEntity(
+            try {
+                db.withTransaction {
+                    require(amountCents > 0) { "请输入有效金额" }
+                    val category = categoryDao.getAll().firstOrNull { it.id == categoryId }
+                        ?: error("分类不存在")
+                    val old = if (id > 0) txDao.getById(id) ?: error("账单不存在") else null
+                    RefundRules.editError(old, type, category)?.let { error(it) }
+                    val updated = (old ?: TransactionEntity(
+                        type = type,
+                        amountCents = amountCents,
+                        categoryId = categoryId,
+                        accountId = accountId,
+                        timestamp = timestamp,
+                    )).copy(
                         type = type, amountCents = amountCents, categoryId = categoryId,
                         accountId = accountId, timestamp = timestamp, note = note,
                         counterparty = counterparty, excludeFromAssets = excludeFromAssets,
                         countInStats = countInStats,
                     )
-                )
+                    if (old == null) {
+                        txDao.insert(updated)
+                    } else {
+                        txDao.update(updated)
+                        old.externalId?.takeIf { it.startsWith("NTF:") }?.removePrefix("NTF:")?.let { key ->
+                            val changed = buildSet {
+                                if (old.categoryId != categoryId) add(com.controleco.app.capture.GuardedField.CATEGORY)
+                                if (old.accountId != accountId) add(com.controleco.app.capture.GuardedField.ACCOUNT)
+                                if (old.amountCents != amountCents) add(com.controleco.app.capture.GuardedField.AMOUNT)
+                                if (old.counterparty != counterparty) add(com.controleco.app.capture.GuardedField.COUNTERPARTY)
+                                if (old.note != note) add(com.controleco.app.capture.GuardedField.NOTE)
+                            }
+                            com.controleco.app.capture.OverlayFieldGuards.mark(key, changed)
+                        }
+                        // 退款分类不参与商户学习，避免把原商户错误学成退款。
+                        if (old.source != TxSource.MANUAL && old.refundMark == RefundMark.NONE) {
+                            MerchantRules.learn(merchantRuleDao, type, categoryId, accountId, counterparty, note)
+                        }
+                    }
+                }
+                withContext(Dispatchers.Main) { onResult(null) }
+            } catch (e: Exception) {
+                AppLog.e("tx", "save failed", e)
+                withContext(Dispatchers.Main) { onResult(e.message ?: "保存失败") }
             }
         }
     }
@@ -1745,126 +1766,51 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     /** debug：20 秒后发测试捕获通知 */
     fun scheduleNotifyTest(onResult: (String) -> Unit) = CaptureCenter.scheduleNotifyTest(onResult)
 
-    // ---------- 登记退款（无金额退款通知 → 选一笔被退款的账单） ----------
+    // ---------- 退款（捕获退款与历史待处理退款共用统一事务） ----------
 
-    /** 近 60 天还没标「已退款」的支出候选 */
-    suspend fun refundCandidates(): List<TransactionRow> = withContext(Dispatchers.IO) {
-        txDao.recentUnrefundedExpenses(System.currentTimeMillis() - 60L * 24 * 3_600_000)
+    /** 不限月份和条数；候选页按商户、金额及本地日期区间继续筛选。 */
+    suspend fun refundCandidates(amountCents: Long? = null): List<TransactionRow> = withContext(Dispatchers.IO) {
+        txDao.refundCandidates(amountCents?.takeIf { it > 0 })
     }
 
-    /**
-     * 登记退款：生成一条退款收入（REFUND_INCOME，金额可改以支持部分退款，入原账户），
-     * 并把用户选中的那笔支出标成 REFUNDED_EXPENSE（不再计入支出）。
-     *
-     * **两笔记录之间不建立任何关联**：支出只是"被标了已退款"，退款收入只是"一笔收入"。
-     * 生成的退款收入 `refundPending = false`，不会进「待确认账单」。
-     */
-    fun registerRefund(expenseId: Long, amountCents: Long, onDone: (String?) -> Unit) {
+    suspend fun pendingById(id: Long): PendingTransactionEntity? = withContext(Dispatchers.IO) {
+        pendingDao.getById(id)
+    }
+
+    private fun performRefund(
+        action: String,
+        onDone: (String?) -> Unit,
+        block: suspend RefundActions.() -> Unit,
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val expense = txDao.getById(expenseId)
-                when {
-                    expense == null -> { onDone("原支出记录不存在"); return@launch }
-                    expense.refundMark != RefundMark.NONE -> { onDone("该笔支出已标记退款"); return@launch }
-                    amountCents <= 0 -> { onDone("退款金额需大于 0"); return@launch }
-                }
-                val cats = categoryDao.getAll()
-                // 退款收入归「退款」分类（不是收入「其他」）：账单里一眼能看出这是退回来的钱
-                val incomeCatId = RefundCategory.incomeCategoryId(cats)
-                    ?: error("缺少收入分类，请先在分类管理中添加")
-                txDao.insert(
-                    TransactionEntity(
-                        type = TxType.INCOME,
-                        amountCents = amountCents,
-                        categoryId = incomeCatId,
-                        accountId = expense.accountId,
-                        timestamp = System.currentTimeMillis(),
-                        note = "退款收入（手动登记）",
-                        counterparty = expense.counterparty,
-                        source = TxSource.NOTIFICATION,
-                        refundMark = RefundMark.REFUND_INCOME,
-                        refundPending = false,
-                    ),
-                )
-                txDao.markExpenseRefunded(expenseId)
-                AppLog.i("refund", "registered refund for expense #$expenseId amount=${Money.formatYuan(amountCents)}")
-                withContext(Dispatchers.Main) { onDone(null) }
+            val error = try {
+                RefundActions(db).block()
+                AppLog.i("refund", action)
+                null
             } catch (e: Exception) {
-                AppLog.e("refund", "register failed", e)
-                withContext(Dispatchers.Main) { onDone("登记失败：${e.message ?: "未知错误"}") }
+                AppLog.e("refund", "$action failed", e)
+                e.message ?: "操作失败"
             }
+            withContext(Dispatchers.Main) { onDone(error) }
         }
     }
 
-    // ---------- 待处理退款（已入账的退款收入，只等用户处理） ----------
+    fun refundExpense(expenseId: Long, onDone: (String?) -> Unit) =
+        performRefund("refund expense #$expenseId", onDone) { refundExpense(expenseId) }
 
-    /** 同金额的支出候选：待处理退款点开后列出来给用户选 */
-    suspend fun refundExpenseCandidates(amountCents: Long): List<TransactionRow> =
-        withContext(Dispatchers.IO) { txDao.expenseCandidatesByAmount(amountCents) }
-
-    /**
-     * 处理一笔待处理的退款：**把用户选中的那笔支出标成「已退款」**（不再计入支出），
-     * 退款自己则标成「已处理」（`refundPending = 0`，不再出现在待确认里）。
-     *
-     * 两笔记录之间**不写任何关联**：这就是两个独立的标记。支出统计的口径是
-     * 「未退款的支出之和」，所以标记一打上，这笔钱就不再计入本月支出与分类预算。
-     *
-     * 校验：退款必须存在、是退款收入且还没处理；原支出必须存在、是支出且还没标过已退款。
-     */
-    fun handlePendingRefund(refundId: Long, expenseId: Long, onDone: (String?) -> Unit) {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val refund = txDao.getById(refundId)
-                val expense = txDao.getById(expenseId)
-                if (refund == null || refund.refundMark != RefundMark.REFUND_INCOME ||
-                    !refund.refundPending || expense == null || expense.type != TxType.EXPENSE
-                ) {
-                    val message = when {
-                        refund == null -> "退款记录不存在"
-                        refund.refundMark != RefundMark.REFUND_INCOME -> "该记录不是退款收入"
-                        !refund.refundPending -> "该退款已处理过"
-                        expense == null -> "原支出记录不存在"
-                        else -> "只能选择支出账单"
-                    }
-                    withContext(Dispatchers.Main) { onDone(message) }
-                    return@launch
-                }
-                if (expense.refundMark != RefundMark.NONE) {
-                    withContext(Dispatchers.Main) { onDone("该支出已标记过已退款") }
-                    return@launch
-                }
-                txDao.markExpenseRefunded(expenseId)
-                txDao.clearRefundPending(refundId)
-                AppLog.i("refund", "refund #$refundId handled, expense #$expenseId marked refunded")
-                withContext(Dispatchers.Main) { onDone(null) }
-            } catch (e: Exception) {
-                AppLog.e("refund", "handle pending refund failed", e)
-                withContext(Dispatchers.Main) { onDone("处理失败：${e.message ?: "未知错误"}") }
-            }
+    fun refundCaptured(pendingId: Long, expenseId: Long, onDone: (String?) -> Unit) =
+        performRefund("refund capture #$pendingId expense #$expenseId", onDone) {
+            refundCaptured(pendingId, expenseId)
         }
-    }
 
-    /**
-     * 「记为收入」：这笔退款没有对应的支出账单，只按普通收入处理。
-     * 清掉退款标记后它不再出现在待处理里；原支出保持原样（照常计入支出）。
-     */
-    fun markRefundAsIncome(refundId: Long, onDone: (String?) -> Unit) {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val refund = txDao.getById(refundId)
-                if (refund == null || refund.refundMark != RefundMark.REFUND_INCOME) {
-                    withContext(Dispatchers.Main) { onDone("该记录不是退款收入") }
-                    return@launch
-                }
-                txDao.markRefundAsIncome(refundId)
-                AppLog.i("refund", "refund #$refundId kept as plain income")
-                withContext(Dispatchers.Main) { onDone(null) }
-            } catch (e: Exception) {
-                AppLog.e("refund", "mark refund as income failed", e)
-                withContext(Dispatchers.Main) { onDone("操作失败：${e.message ?: "未知错误"}") }
-            }
+    fun undoRefund(expenseId: Long, onDone: (String?) -> Unit) =
+        performRefund("undo refund expense #$expenseId", onDone) { undoRefund(expenseId) }
+
+    /** 兼容升级前已入账、仍待指认原支出的退款，不重复生成收入。 */
+    fun handlePendingRefund(refundId: Long, expenseId: Long, onDone: (String?) -> Unit) =
+        performRefund("handle legacy refund #$refundId expense #$expenseId", onDone) {
+            handleLegacyRefund(refundId, expenseId)
         }
-    }
 
     // ---------- 退款关联：支出与退款收入按差额统计（修改2） ----------
 
@@ -1991,16 +1937,22 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         /** 计入账单和收支统计：默认 true（自动入账口径计入统计） */
         countInStats: Boolean = true,
     ) {
-        // 金额待补条（0 元）不能直接入账：先在列表里补金额
-        if (item.amountCents <= 0) {
-            AppLog.w("pending", "confirm rejected (amount missing) #${item.id}")
+        // 金额待补条与捕获退款不能直接走普通入账。
+        if (item.amountCents <= 0 || item.refundMark == RefundMark.REFUND_INCOME) {
+            AppLog.w("pending", "confirm rejected (amount missing or refund) #${item.id}")
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
-            val txId = PendingActions.confirm(
-                db, txDao, pendingDao, merchantRuleDao, item,
-                categoryId, accountId, counterparty, item.note, item.amountCents, excludeFromAssets, countInStats,
-            )
+            val txId = try {
+                PendingActions.confirm(
+                    db, txDao, pendingDao, merchantRuleDao, item,
+                    categoryId, accountId, counterparty, item.note, item.amountCents, excludeFromAssets, countInStats,
+                )
+            } catch (e: Exception) {
+                AppLog.e("pending", "confirm failed #${item.id}", e)
+                return@launch
+            }
+            com.controleco.app.capture.OverlayFieldGuards.clear(item.dedupKey)
             // 终态记忆：同笔的迟到重复捕获不再回到待确认队列
             if (txId != null) LogicalTransactions.markResolved(item, CaptureResolution.HANDLED)
         }
@@ -2008,67 +1960,91 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun confirmAllPending() {
         viewModelScope.launch(Dispatchers.IO) {
-            // 只确认金额完整且非 ASK 的条目：ASK（微信红包待确认）必须由用户逐条明确决定，
-            // 不能被「全部确认」批量入账；金额待补的也必须逐条补录或丢弃。
+            // ASK、缺金额和捕获退款不参与批量普通入账；逐笔复用单条确认的事务与唯一键防丢账保护。
             val items = pendingDao.getAllPending().filter {
-                it.status == com.controleco.app.data.db.PendingStatus.PENDING && it.amountCents > 0
+                it.status == PendingStatus.PENDING && it.amountCents > 0 &&
+                    it.refundMark != RefundMark.REFUND_INCOME
             }
             if (items.isEmpty()) return@launch
             val cats = categoryDao.getAll()
             val accs = accountDao.getAll()
-            val entities = items.map { item ->
-                val cat = cats.firstOrNull {
-                    it.id == CaptureDefaults.categoryId(
-                        cats, item.type, item.counterparty.ifBlank { item.note },
-                        isRefund = item.refundMark == RefundMark.REFUND_INCOME,
-                    )
-                }
-                    ?: return@launch
-                TransactionEntity(
-                    type = item.type,
-                    amountCents = item.amountCents,
-                    categoryId = cat.id,
-                    accountId = CaptureDefaults.accountId(
+            val rules = merchantRuleDao.getAll()
+            var processed = 0
+            var inserted = 0
+            items.forEach { item ->
+                try {
+                    val categoryId = CaptureDefaults.categoryId(
+                        cats,
+                        item.type,
+                        item.counterparty.ifBlank { item.note },
+                        learnedRules = rules,
+                        counterparty = item.counterparty,
+                        note = item.note,
+                    ) ?: error("分类不存在")
+                    val accountId = CaptureDefaults.accountId(
                         accs,
                         item.sourcePackage,
                         CaptureDefaults.bankNameOf(item.sourcePackage, item.ruleName),
+                        learnedAccountId = MerchantRules.accountIdFrom(
+                            rules, accs, item.type, item.counterparty, item.note,
+                        ),
                         instrumentLabel = item.paymentInstrument,
-                    ) ?: return@launch,
-                    timestamp = item.timestamp,
-                    note = item.note.ifBlank { item.ruleName },
-                    counterparty = item.counterparty,
-                    source = CaptureDefaults.txSource(item.sourcePackage),
-                    externalId = "NTF:${item.dedupKey}",
-                    refundMark = item.refundMark,
-                    // 批量确认的退款收入同样要指认原支出
-                    refundPending = item.refundMark == RefundMark.REFUND_INCOME,
-                    flowId = item.flowId,
-                )
+                    ) ?: error("账户不存在")
+                    val txId = PendingActions.confirm(
+                        db, txDao, pendingDao, merchantRuleDao, item,
+                        categoryId, accountId, item.counterparty, item.note, item.amountCents,
+                    )
+                    if (txId != null) inserted++
+                    // 只有条目确实已落账或确认是既有重复，才清理字段保护；失败条目继续保留。
+                    if (pendingDao.getById(item.id) == null) {
+                        processed++
+                        com.controleco.app.capture.OverlayFieldGuards.clear(item.dedupKey)
+                    }
+                } catch (e: Exception) {
+                    AppLog.e("pending", "confirmAll item failed #${item.id}", e)
+                }
             }
-            val inserted = db.withTransaction {
-                val ids = txDao.insertAllIgnore(entities)
-                items.forEach { pendingDao.deleteById(it.id) }
-                ids.count { it != -1L }
-            }
-            // 终态记忆：批量确认后同笔的迟到重复捕获不再回到待确认队列
-            items.forEach { LogicalTransactions.markResolved(it, CaptureResolution.HANDLED) }
-            AppLog.i("pending", "confirmAll: ${items.size} items, inserted=$inserted")
+            AppLog.i("pending", "confirmAll: ${items.size} items, processed=$processed inserted=$inserted")
         }
     }
 
-    /** 待确认确认弹窗的默认分类（退款收入固定「退款」；其余为该类型的"其他"，缺省取该类型第一个） */
-    fun guessCategoryId(type: TxType, merchantHint: String = "", isRefund: Boolean = false): Long? =
-        CaptureDefaults.categoryId(categories.value, type, merchantHint, isRefund = isRefund)
+    /** 待确认确认弹窗的默认分类：优先商户学习，再按关键词，最后回退该方向普通分类。 */
+    fun guessCategoryId(
+        type: TxType,
+        merchantHint: String = "",
+        isRefund: Boolean = false,
+        counterparty: String = merchantHint,
+        note: String = "",
+    ): Long? = CaptureDefaults.categoryId(
+        categories.value,
+        type,
+        merchantHint,
+        learnedRules = merchantRules.value,
+        counterparty = counterparty,
+        note = note,
+        isRefund = isRefund,
+    )
 
     /**
-     * 按来源推测账户：微信→微信零钱、支付宝→支付宝、银行侧（短信/银行推送）→ 先按银行名匹配
-     * 账户名，再退化到"银行"关键词。[ruleName] 供号码兜底的短信取回银行名用。
+     * 按来源推测账户：优先商户学习，再按支付工具、银行名与渠道匹配。
+     * [ruleName] 供号码兜底的短信取回银行名用。
      */
-    fun guessAccountId(sourcePackage: String, ruleName: String = "", instrument: String? = null): Long? =
-        CaptureDefaults.accountId(
-            accounts.value, sourcePackage, CaptureDefaults.bankNameOf(sourcePackage, ruleName),
-            instrumentLabel = instrument,
-        )
+    fun guessAccountId(
+        sourcePackage: String,
+        ruleName: String = "",
+        instrument: String? = null,
+        type: TxType? = null,
+        counterparty: String = "",
+        note: String = "",
+    ): Long? = CaptureDefaults.accountId(
+        accounts.value,
+        sourcePackage,
+        CaptureDefaults.bankNameOf(sourcePackage, ruleName),
+        learnedAccountId = type?.let {
+            MerchantRules.accountIdFrom(merchantRules.value, accounts.value, it, counterparty, note)
+        },
+        instrumentLabel = instrument,
+    )
 
     fun clearCaptureLog() {
         viewModelScope.launch(Dispatchers.IO) {

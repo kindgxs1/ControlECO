@@ -28,6 +28,9 @@ object CategoryRules {
     fun isReservedIncome(type: TxType, name: String): Boolean =
         type == TxType.INCOME && name.trim() in RESERVED_INCOME_NAMES
 
+    fun isRefundIncome(type: TxType, name: String): Boolean =
+        type == TxType.INCOME && name.trim() == RefundCategory.NAME
+
     /** 界面上锁：不渲染名称输入框、类型分段与删除按钮 */
     fun isLocked(category: CategoryEntity): Boolean =
         isFallbackName(category.name) || isReservedIncome(category.type, category.name)

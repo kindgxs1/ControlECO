@@ -102,12 +102,12 @@ data class TransactionEntity(
     /**
      * 退款收入是否还没被用户处理（决定它是否出现在「待确认账单」里）。
      *
-     * **退款与原支出互不关联**：支出只被打上 [RefundMark.REFUNDED_EXPENSE]（已退款、不再计入支出），
-     * 退款收入只被打上「已处理」（`refundPending = false`、照常计入收入），两者之间没有 id 关系。
+     * 新处理的退款通过 [refundLinkId] 精确关联原支出；支出同时打上
+     * [RefundMark.REFUNDED_EXPENSE]，退款收入在处理后清除本标记。
      * 账单导入时账单自己就把该标的都标好了，所以导入的退款 = false，不打扰用户。
      *
      * - 账单导入的退款收入 = false；
-     * - 通知/页面捕获的退款收入 = true，直到用户在待确认里选中被退款的支出或选择「记为收入」；
+     * - 旧版通知/页面捕获的退款收入 = true，直到用户在待确认里选中被退款的支出；
      * - 迁移 v12 之前入库的历史退款 = false（不打扰用户）。
      */
     @ColumnInfo(defaultValue = "0")

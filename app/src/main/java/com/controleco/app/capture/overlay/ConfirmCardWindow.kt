@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -136,6 +137,20 @@ internal object ConfirmCardWindow {
         }
 
         var added = false
+        var firstFrameDrawn = false
+        val firstDraw = object : ViewTreeObserver.OnDrawListener {
+            override fun onDraw() {
+                if (firstFrameDrawn || confirmView !== view) return
+                firstFrameDrawn = true
+                // 首帧真正绘制才记"展示过"：addView 成功但不可见的窗口不能吞掉后续补弹
+                OverlayPromptLog.markShown(pending.dedupKey)
+                handler.post {
+                    if (view.viewTreeObserver.isAlive) view.viewTreeObserver.removeOnDrawListener(this)
+                }
+                AppLog.i(TAG, "confirm card first frame pending=#${pending.id}")
+            }
+        }
+        view.viewTreeObserver.addOnDrawListener(firstDraw)
         return try {
             wm.addView(view, params)
             added = true
@@ -145,9 +160,7 @@ internal object ConfirmCardWindow {
             showingPendingId = pending.id
             dismissCallback = onDismiss
             scheduleAutoDismiss()
-            // 成功展示过一次后，后续通道（页面回填 / 银行动账）只静默富化，不再补弹第二张卡
-            OverlayPromptLog.markShown(pending.dedupKey)
-            AppLog.i(TAG, "confirm card shown pending=#${pending.id} ${pending.ruleName}")
+            AppLog.i(TAG, "confirm card attached pending=#${pending.id} ${pending.ruleName}")
             true
         } catch (e: Exception) {
             // 无悬浮窗权限 / 被支付保护层拦截：调用方回落通知（Toast 可见而卡片不可见 = 被拦截的铁证）。

@@ -273,6 +273,9 @@ interface TransactionDao {
     @Query("UPDATE transactions SET accountId = :accountId WHERE externalId = :externalId")
     suspend fun updateAccountByExternalId(externalId: String, accountId: Long)
 
+    @Query("UPDATE transactions SET categoryId = :categoryId WHERE id = :id")
+    suspend fun updateCategory(id: Long, categoryId: Long)
+
     /** 页面通道回填时把支付流程标识写到正式交易（可追踪"这笔账属于哪次支付流程"） */
     @Query("UPDATE transactions SET flowId = :flowId WHERE externalId = :externalId AND flowId = ''")
     suspend fun updateFlowIdByExternalId(externalId: String, flowId: String)
@@ -296,7 +299,7 @@ interface TransactionDao {
         countInStats: Boolean,
     )
 
-    /** 登记退款的候选：近 60 天还没标「已退款」的支出（供"无金额退款通知→选被退款的账单"使用） */
+    /** 退款候选：全部未退款支出；已捕获金额时仅返回同额记录。 */
     @Query(
         """SELECT t.id AS id, t.type AS type, t.amountCents AS amountCents, t.timestamp AS timestamp,
            t.note AS note, t.counterparty AS counterparty, t.source AS source,
@@ -318,10 +321,15 @@ interface TransactionDao {
                GROUP BY refundLinkId
            ) r ON r.refundLinkId = t.id
            LEFT JOIN transactions e ON e.id = t.refundLinkId AND e.type = 'EXPENSE'
-           WHERE t.type = 'EXPENSE' AND t.refundMark = 'NONE' AND t.timestamp >= :since
-           ORDER BY t.timestamp DESC LIMIT 50"""
+           WHERE t.type = 'EXPENSE' AND t.refundMark = 'NONE'
+             AND NOT EXISTS (
+                 SELECT 1 FROM transactions linked
+                 WHERE linked.refundLinkId = t.id AND linked.type = 'INCOME'
+             )
+             AND (:amountCents IS NULL OR t.amountCents = :amountCents)
+           ORDER BY t.timestamp DESC, t.id DESC"""
     )
-    suspend fun recentUnrefundedExpenses(since: Long): List<TransactionRow>
+    suspend fun refundCandidates(amountCents: Long?): List<TransactionRow>
 
     // ---------- 待处理的退款收入（已入账，只等用户处理） ----------
 
@@ -359,37 +367,6 @@ interface TransactionDao {
     @Query("SELECT COUNT(*) FROM transactions WHERE refundPending = 1")
     fun observePendingRefundCount(): Flow<Int>
 
-    /**
-     * 同金额的支出候选（待处理退款 sheet 用）：只列**金额相同、还没被标已退款**的支出，新的在前。
-     * 不做"这笔退款配哪笔支出"的判定：选中只是给这笔支出打「已退款」标记，两笔记录之间不留关联。
-     */
-    @Query(
-        """SELECT t.id AS id, t.type AS type, t.amountCents AS amountCents, t.timestamp AS timestamp,
-           t.note AS note, t.counterparty AS counterparty, t.source AS source,
-           c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
-           a.id AS accountId, a.name AS accountName,
-           t.refundMark AS refundMark, t.refundPending AS refundPending,
-           t.countInStats AS countInStats,
-           t.refundLinkId AS refundLinkId,
-           COALESCE(r.totalRefundCents, 0) AS linkedRefundCents,
-           COALESCE(e.amountCents, 0) AS linkedExpenseCents,
-           t.createdAt AS createdAt
-           FROM transactions t
-           JOIN categories c ON t.categoryId = c.id
-           JOIN accounts a ON t.accountId = a.id
-           LEFT JOIN (
-               SELECT refundLinkId, SUM(amountCents) AS totalRefundCents
-               FROM transactions
-               WHERE refundLinkId > 0 AND type = 'INCOME' AND countInStats = 1
-               GROUP BY refundLinkId
-           ) r ON r.refundLinkId = t.id
-           LEFT JOIN transactions e ON e.id = t.refundLinkId AND e.type = 'EXPENSE'
-           WHERE t.type = 'EXPENSE' AND t.amountCents = :amountCents
-             AND t.refundMark != 'REFUNDED_EXPENSE'
-           ORDER BY t.timestamp DESC LIMIT 50"""
-    )
-    suspend fun expenseCandidatesByAmount(amountCents: Long): List<TransactionRow>
-
     /** 把退款标成「已处理」（只对还没处理的退款生效，重复点击/并发不会覆盖） */
     @Query("UPDATE transactions SET refundPending = 0 WHERE id = :refundId AND refundPending = 1")
     suspend fun clearRefundPending(refundId: Long)
@@ -401,12 +378,12 @@ interface TransactionDao {
     @Query("UPDATE transactions SET refundMark = 'REFUNDED_EXPENSE' WHERE id = :expenseId AND refundMark = 'NONE'")
     suspend fun markExpenseRefunded(expenseId: Long)
 
-    /** 「记为收入」：去掉退款标记，当成普通收入记账（这笔退款不再有"待处理"状态） */
-    @Query(
-        """UPDATE transactions SET refundMark = 'NONE', refundPending = 0
-           WHERE id = :refundId"""
-    )
-    suspend fun markRefundAsIncome(refundId: Long)
+    @Query("UPDATE transactions SET refundMark = 'NONE' WHERE id = :expenseId AND type = 'EXPENSE' AND refundMark = 'REFUNDED_EXPENSE'")
+    suspend fun clearExpenseRefund(expenseId: Long)
+
+    /** 撤销退款只读取明确关联到该支出的收入，不按同额或时间猜测。 */
+    @Query("SELECT * FROM transactions WHERE refundLinkId = :expenseId ORDER BY id ASC")
+    suspend fun refundsLinkedTo(expenseId: Long): List<TransactionEntity>
 
     /** 把退款收入与原支出建立关联（ refundLinkId 指向 expenseId ） */
     @Query("UPDATE transactions SET refundLinkId = :expenseId WHERE id = :refundId AND type = 'INCOME'")
@@ -733,6 +710,7 @@ interface PendingDao {
     @Query(
         """DELETE FROM pending_transactions
            WHERE status = 'PENDING' AND amountCents = 0
+             AND refundMark != 'REFUND_INCOME'
              AND sourcePackage = :sourcePackage AND type = :type
              AND timestamp BETWEEN :from AND :to"""
     )
@@ -760,7 +738,7 @@ interface MerchantRuleDao {
     suspend fun getAll(): List<MerchantRuleEntity>
 
     /** 管理页列表（最近学习的在前） */
-    @Query("SELECT * FROM merchant_rules ORDER BY updatedAt DESC LIMIT 300")
+    @Query("SELECT * FROM merchant_rules ORDER BY updatedAt DESC")
     fun observeRecent(): Flow<List<MerchantRuleEntity>>
 
     @Query("SELECT COUNT(*) FROM merchant_rules")

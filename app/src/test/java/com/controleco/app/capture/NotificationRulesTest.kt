@@ -342,4 +342,43 @@ class NotificationRulesTest {
     fun `blank body returns null`() {
         assertNull(parse(NotificationRules.WECHAT, "微信支付", "  "))
     }
+
+    @Test
+    fun `支付宝支出积分提醒_真实52元样本不被营销词过滤`() {
+        // 2026-11-05 用户提供的真实捕获：通知正文重复“交易提醒”，积分数不能作金额。
+        val r = parse(
+            NotificationRules.ALIPAY, "交易提醒",
+            "交易提醒 你有一笔52.00元的支出，点击领取9个支付宝积分。",
+        )!!
+        assertEquals(TxType.EXPENSE, r.type)
+        assertEquals(5200L, r.amountCents)
+        assertFalse(r.isRefund)
+        assertEquals("支付宝", r.sourceLabel)
+        assertEquals("支付宝·支出积分提醒", r.ruleName)
+        assertEquals("com.eg.android.AlipayGphone|EXPENSE|5200|${postTime / 1_000L}", r.dedupKey)
+    }
+
+    @Test
+    fun `支付宝支出积分提醒_支持长正文与归一化金额`() {
+        // 合成边界：只在 bigText 中提供完整句式；积分大小不影响支出金额。
+        for ((body, cents) in listOf(
+            "你有一笔0.01元的支出，点击领取999个支付宝积分。" to 1L,
+            "交易提醒 你有一笔１,２３４.５６元的支出, 点击领取１２个支付宝积分" to 123456L,
+            "你有一笔10000000元的支出，点击领取1个支付宝积分。" to NotificationRules.MAX_AMOUNT_CENTS,
+        )) {
+            val r = parse(NotificationRules.ALIPAY, "交易提醒", "交易提醒", bigText = body)!!
+            assertEquals(cents, r.amountCents)
+            assertEquals("支付宝·支出积分提醒", r.ruleName)
+        }
+    }
+
+    @Test
+    fun `支付宝支出积分提醒_不接受非法或超限金额`() {
+        for (amount in listOf("0.00", "-52.00", "52.001", "10000000.01")) {
+            assertNull(parse(
+                NotificationRules.ALIPAY, "交易提醒",
+                "你有一笔${amount}元的支出，点击领取9个支付宝积分。",
+            ))
+        }
+    }
 }

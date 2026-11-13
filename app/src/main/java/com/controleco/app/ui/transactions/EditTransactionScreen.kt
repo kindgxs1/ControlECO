@@ -40,10 +40,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.CategoryTree
 import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.data.db.CategoryEntity
+import com.controleco.app.data.db.CategoryRules
+import com.controleco.app.data.db.RefundMark
 import com.controleco.app.data.db.TransactionEntity
 import com.controleco.app.data.db.TxType
 import com.controleco.app.ui.eco.EcoConfirm
 import com.controleco.app.ui.eco.EcoField
+import com.controleco.app.ui.eco.EcoGhostButton
 import com.controleco.app.ui.eco.EcoHairline
 import com.controleco.app.ui.eco.EcoPane
 import com.controleco.app.ui.eco.EcoPillTone
@@ -73,9 +76,16 @@ import java.time.ZoneId
 @Composable
 fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
     val accounts by vm.accounts.collectAsStateWithLifecycle()
-    val categories by vm.categories.collectAsStateWithLifecycle()
+    val allCategories by vm.categories.collectAsStateWithLifecycle()
 
     var existing by remember { mutableStateOf<TransactionEntity?>(null) }
+    val categories = allCategories.filter {
+        if (existing?.refundMark == RefundMark.REFUND_INCOME) {
+            CategoryRules.isRefundIncome(it.type, it.name)
+        } else {
+            !CategoryRules.isRefundIncome(it.type, it.name)
+        }
+    }
     LaunchedEffect(txId) {
         if (txId > 0) existing = vm.transactionById(txId)
     }
@@ -93,6 +103,7 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
     var countInStats by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
 
     // 编辑模式：加载完成后回填表单（仅一次）
     LaunchedEffect(existing) {
@@ -125,13 +136,21 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
     val catsOfType = CategoryTree.topLevel(categories, type)
     var subPickerFor by remember { mutableStateOf<CategoryEntity?>(null) }
     val cents = Money.parseCents(amountText)
-    val valid = cents != null && cents > 0L && categoryId != null && accountId != null
+    val valid = cents != null && cents > 0L && categoryId != null && accountId != null && !saving
+    val unchanged = existing?.let { record ->
+        val local = Instant.ofEpochMilli(record.timestamp).atZone(ZoneId.systemDefault())
+        type == record.type && cents == record.amountCents && categoryId == record.categoryId &&
+            accountId == record.accountId && date == local.toLocalDate() && manualTime == local.toLocalTime() &&
+            counterparty.trim() == record.counterparty.trim() && note.trim() == record.note.trim() &&
+            excludeFromAssets == record.excludeFromAssets && countInStats == record.countInStats
+    } == true
     val c = MaterialTheme.eco
     val scroll = rememberScrollState()
     val density = LocalDensity.current
     val imeVisible = WindowInsets.ime.getBottom(density) > 0
 
     fun save() {
+        if (saving) return
         val value = Money.parseCents(amountText)
         when {
             value == null || value <= 0L -> error = "请输入有效金额"
@@ -144,12 +163,20 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
                     date == LocalDate.now() -> System.currentTimeMillis()
                     else -> date.atTime(LocalTime.now()).atZone(zone).toInstant().toEpochMilli()
                 }
+                saving = true
                 vm.saveTransaction(
                     txId, type, value, categoryId!!, accountId!!, ts, note.trim(), counterparty.trim(),
                     excludeFromAssets, countInStats,
+                    onResult = { message ->
+                        saving = false
+                        if (message == null) {
+                            EcoToast.show(if (txId > 0) "已保存修改" else "已记一笔")
+                            onBack()
+                        } else {
+                            error = message
+                        }
+                    },
                 )
-                EcoToast.show(if (txId > 0) "已保存修改" else "已记一笔")
-                onBack()
             }
         }
     }
@@ -352,6 +379,30 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
                     style = TxErrorStyle,
                     color = c.clay,
                     modifier = Modifier.padding(start = 2.dp),
+                )
+            }
+
+            if (existing?.type == TxType.EXPENSE && type == TxType.EXPENSE) {
+                Spacer(Modifier.height(18.dp))
+                val refunded = existing?.refundMark == RefundMark.REFUNDED_EXPENSE
+                EcoGhostButton(
+                    text = if (refunded) "撤销退款" else "退款该账单",
+                    enabled = unchanged && !saving,
+                    height = 46.dp,
+                    onClick = {
+                        if (saving) return@EcoGhostButton
+                        saving = true
+                        val done: (String?) -> Unit = { message ->
+                            saving = false
+                            if (message == null) {
+                                EcoToast.show(if (refunded) "已撤销退款" else "已退款")
+                                onBack()
+                            } else {
+                                error = message
+                            }
+                        }
+                        if (refunded) vm.undoRefund(txId, done) else vm.refundExpense(txId, done)
+                    },
                 )
             }
 

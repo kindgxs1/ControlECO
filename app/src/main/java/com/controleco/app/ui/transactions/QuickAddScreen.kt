@@ -251,9 +251,16 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                     vm.saveTransaction(
                         -1L, type, amount, categoryId!!, accountId!!, ts, note.trim(), counterparty.trim(),
                         excludeFromAssets, countInStats,
+                        onResult = { err ->
+                            saving = false
+                            if (err == null) {
+                                EcoToast.show("已记一笔")
+                                onBack()
+                            } else {
+                                error = err
+                            }
+                        },
                     )
-                    EcoToast.show("已记一笔")
-                    onBack()
                 }
             }
         }

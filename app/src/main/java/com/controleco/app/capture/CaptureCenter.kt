@@ -364,14 +364,18 @@ object CaptureCenter {
         note: String,
         pendingId: Long = -1L,
     ) {
-        if (pendingId > 0) {
-            val pending = pendingDao.getById(pendingId)
-            if (pending != null &&
-                tryShowConfirmCard(pending, alreadyEntered = false, isRefund, sourceLabel, counterparty, dedupKey)
-            ) {
-                return
-            }
+        // 插入被数据库去重拒绝时没有新的待确认条目，不应再次提醒。
+        if (pendingId <= 0L || OverlayPromptLog.wasShown(dedupKey)) return
+        val pending = pendingDao.getById(pendingId) ?: return
+        if (isRefund) {
+            postRefundNotification(pending)
+            return
         }
+        if (tryShowConfirmCard(pending, alreadyEntered = false, isRefund, sourceLabel, counterparty, dedupKey)) {
+            return
+        }
+        // 等待期间用户可能已确认/忽略，或另一任务已弹出卡片。
+        if (OverlayPromptLog.wasShown(dedupKey) || pendingDao.getById(pendingId) == null) return
         // 悬浮窗入账开着却没能弹卡（权限/系统拦截/前台不符/条目已处理）：兜底通知仍然发出，
         // 否则三开关里「入账提醒」关着时用户完全无感知，误以为捕获没触发。
         // 带上 pendingId：通知栏可直接「忽略」这条待确认（与卡片里的「忽略」同义）
@@ -877,6 +881,7 @@ object CaptureCenter {
     /** MainActivity 前台变化：进入前台立即收起卡片（应用内用待确认列表，卡片悬在本应用上会挡操作） */
     fun setAppForeground(foreground: Boolean) {
         appInForeground = foreground
+        if (!foreground && foregroundPackage == appContext.packageName) foregroundPackage = null
         if (foreground) mainHandler.post { ConfirmCardWindow.dismissAll() }
     }
 
@@ -888,7 +893,9 @@ object CaptureCenter {
 
     /** 无障碍服务上报前台应用（悬浮卡只在"人还在支付页"时弹） */
     fun noteForegroundPackage(packageName: String) {
-        foregroundPackage = packageName
+        foregroundPackage = com.controleco.app.capture.overlay.foregroundAfterEvent(
+            foregroundPackage, packageName, appContext.packageName, appInForeground,
+        )
         foregroundSeenAt = SystemClock.elapsedRealtime()
     }
 
@@ -967,27 +974,38 @@ object CaptureCenter {
         forcePrompt: Boolean = false,
         askMode: Boolean = false,
     ): Boolean {
+        // 退款必须进入原支出选择页，不能用普通确认卡直接记为收入。
+        if (isRefund) return false
+        // 同一笔如果已弹过（首帧绘制登记），不再执行延迟后的新建窗口。
+        if (OverlayPromptLog.wasShown(dedupKey)) return true
         // 预检只判"硬条件"（开关/权限/本应用前台/屏幕），不看前台匹配：支付完成瞬间的前台窗口
         // 可能还是支付保护/安全键盘等系统弹层，等 3 秒后再看用户到底在哪（实测：预检查前台匹配会把卡拒掉）
         if (!overlayConditionsOk(pending.sourcePackage, requireForegroundMatch = false, forcePrompt = forcePrompt)) return false
         delay(if (askMode) RED_PACKET_PROMPT_DELAY_MS else OVERLAY_DELAY_MS)
-        if (!overlayConditionsOk(pending.sourcePackage, requireForegroundMatch = true, forcePrompt = forcePrompt)) return false
-        // 延迟期间条目可能已被确认/丢弃/被同笔富化改写（dedupKey 变化即视为已处理）
-        val fresh = pendingDao.getById(pending.id)
-        if (fresh == null || fresh.dedupKey != dedupKey) {
-            lastOverlayDecision = "等待期间条目已处理"
-            return false
+        // 支付保护层与上一张卡片可能仍在退出；短暂失败不能只依赖另一次捕获才补弹。
+        repeat(3) { attempt ->
+            if (attempt > 0) delay(1_000L)
+            if (OverlayPromptLog.wasShown(dedupKey)) return true
+            if (!overlayConditionsOk(pending.sourcePackage, requireForegroundMatch = true, forcePrompt = forcePrompt)) return false
+            // 延迟期间条目可能已被确认/丢弃/被同笔富化改写（dedupKey 变化即视为已处理）
+            val fresh = pendingDao.getById(pending.id)
+            if (fresh == null || fresh.dedupKey != dedupKey) {
+                lastOverlayDecision = "等待期间条目已处理"
+                return OverlayPromptLog.wasShown(dedupKey)
+            }
+            val shown = showCardOnMain(
+                fresh, categoryDao.getAll(), accountDao.getAll(), merchantRuleDao.getAll(),
+                alreadyEntered, askMode, isRefund, sourceLabel, counterparty, dedupKey,
+            )
+            if (shown) {
+                lastOverlayDecision = "已弹出"
+                AppLog.i("Overlay", "confirm card displayed for #${pending.id}")
+                return true
+            }
         }
-        val categories = categoryDao.getAll()
-        val accounts = accountDao.getAll()
-        val learned = merchantRuleDao.getAll()
-        val shown = showCardOnMain(
-            fresh, categories, accounts, learned, alreadyEntered, askMode,
-            isRefund, sourceLabel, counterparty, dedupKey,
-        )
-        lastOverlayDecision = if (shown) "已弹出" else "系统拦截了悬浮窗（支付保护等）"
-        AppLog.i("Overlay", if (shown) "confirm card shown for #${pending.id}" else "confirm card unavailable, fallback to notification")
-        return shown
+        lastOverlayDecision = "悬浮窗未显示，已回落通知"
+        AppLog.i("Overlay", "confirm card unavailable after retry #${pending.id}, fallback to notification")
+        return false
     }
 
     /**
@@ -1105,13 +1123,31 @@ object CaptureCenter {
                     }
                 },
             )
-            if (shown && pending.id > 0) {
+            if (!shown) {
+                if (cont.isActive) cont.resume(false)
+                return@post
+            }
+            if (pending.id > 0) {
                 shownCardIds += pending.id
                 while (shownCardIds.size > SHOWN_CARD_CAP) {
                     shownCardIds.remove(shownCardIds.first())
                 }
             }
-            if (cont.isActive) cont.resume(shown)
+            // addView 成功只是挂载；首次绘制才登记"展示过"，否则隐藏窗口会吞掉所有补弹。
+            mainHandler.postDelayed({
+                val displayed = OverlayPromptLog.wasShown(dedupKey)
+                if (!displayed) {
+                    // 挂载但不可见：撤掉窗口并允许后续补弹（从已展示 id 集里移除）
+                    if (ConfirmCardWindow.showingPendingId == pending.id) ConfirmCardWindow.dismissConfirm()
+                    shownCardIds.remove(pending.id)
+                } else if (ConfirmCardWindow.showingPendingId == pending.id) {
+                    // 首帧已绘制：撤销早先的待确认/已入账兜底通知（同一笔不重复打扰）
+                    cancelCaptureNotification(
+                        if (alreadyEntered) entryNotifId(dedupKey) else pendingNotifId(dedupKey),
+                    )
+                }
+                if (cont.isActive) cont.resume(displayed)
+            }, 500L)
         }
     }
 
@@ -1355,6 +1391,7 @@ object CaptureCenter {
 
     fun markA11yConnected(connected: Boolean) {
         _a11yConnected.value = connected
+        if (!connected) foregroundPackage = null
         AppLog.i("Page", "a11y service connected=$connected")
     }
 
@@ -1645,7 +1682,9 @@ object CaptureCenter {
                     if (interested && isCaptureEnabled()) {
                         // 无金额的退款到账通知（微信折叠通知实测样本）→ 转退款待处理提醒
                         if (NotificationRules.isAmountlessRefundNotice(packageName, title, text, bigText)) {
-                            handleRefundNotice(packageName, rawId, sourceAt, title, text, bigText)
+                            handleRefundNotice(
+                                packageName, rawId, sourceAt, title, text, bigText, notificationKey, eventStamp,
+                            )
                             return@launch
                         }
                         // 方向可辨但金额缺失（如支付骨架通知）→ 入队 0 元条目 + 通知栏「输入金额」补录
@@ -1670,6 +1709,24 @@ object CaptureCenter {
                 // 但金额/方向不同说明这是同一条通知被更新成了另一笔（或待补金额已回填），
                 // 不能因为实例相同就吞掉——继续走融合/入队。
                 val sameInstance = notificationIdentity?.let { pendingDao.findByNotificationInstance(it) }
+                if (sameInstance != null && canFillRefundAmount(sameInstance, parsed.isRefund, parsed.amountCents)) {
+                    val updated = db.withTransaction {
+                        val fresh = pendingDao.getById(sameInstance.id) ?: return@withTransaction null
+                        if (!canFillRefundAmount(fresh, parsed.isRefund, parsed.amountCents)) {
+                            return@withTransaction null
+                        }
+                        pendingDao.updateAmountAndKey(fresh.id, parsed.amountCents, dedupKey)
+                        pendingDao.updateFromPage(
+                            fresh.id, parsed.amountCents, sourceAt, fresh.counterparty, parsed.note, parsed.ruleName,
+                        )
+                        fresh.copy(amountCents = parsed.amountCents, dedupKey = dedupKey, note = parsed.note)
+                    } ?: return@launch
+                    LogicalTransactions.link(sameInstance.dedupKey, dedupKey)
+                    cancelCaptureNotification(pendingNotifId(sameInstance.dedupKey))
+                    captureDao.updateMatch(rawId, parsed.ruleName, true)
+                    postRefundNotification(updated)
+                    return@launch
+                }
                 val sameTransaction = sameInstance != null &&
                     sameInstance.amountCents == parsed.amountCents &&
                     sameInstance.type == parsed.type &&
@@ -2545,6 +2602,7 @@ object CaptureCenter {
                     note,
                 )
                 if (!lockAccount) syncAutoEntryAccount(existing, instrument)
+                syncAutoEntryCategory(existing, counterparty, note)
             }
         }
         AppLog.i(
@@ -2554,6 +2612,18 @@ object CaptureCenter {
                 " #${existing.id} ${ledger.ruleName} 账户=${ledger.accountLabel}" +
                 (if (existing.userEdited) " [用户已手改，仅记录银行身份]" else ""),
         )
+    }
+
+    /** 商户后到时刷新明确归类；空线索不退回"其他"，用户分类始终优先。 */
+    private suspend fun syncAutoEntryCategory(existing: PendingTransactionEntity, counterparty: String, note: String) {
+        if (existing.status != PendingStatus.AUTO || existing.userEdited ||
+            existing.refundMark != RefundMark.NONE ||
+            GuardedField.CATEGORY in OverlayFieldGuards.fieldsOf(existing.dedupKey)) return
+        val categoryId = CaptureDefaults.categorySuggestionId(
+            categoryDao.getAll(), existing.type, counterparty, note, merchantRuleDao.getAll(),
+        ) ?: return
+        val txId = txDao.findIdByExternalId("NTF:${existing.dedupKey}") ?: return
+        txDao.updateCategory(txId, categoryId)
     }
 
     /**
@@ -2760,7 +2830,7 @@ object CaptureCenter {
 
     // ---------- 退款待处理提醒（无金额退款通知） ----------
 
-    /** 微信"退款到账通知"没有金额，无法直接入队：发通知提醒用户进 App 选被退款的账单 */
+    /** 无金额退款也必须落入待处理队列，通知只是这一条持久化记录的入口。 */
     private suspend fun handleRefundNotice(
         packageName: String,
         rawId: Long,
@@ -2768,29 +2838,47 @@ object CaptureCenter {
         title: String,
         text: String,
         bigText: String,
+        notificationKey: String?,
+        eventStamp: Long,
     ) {
-        captureDao.updateMatch(rawId, "退款·待处理", false)
-        AppLog.i("Ntf", "amountless refund notice -> refund reminder pkg=$packageName")
-        // 溯源记录不产生账目：dedupKey 用提醒 id 的同一构造，永远不会和交易对上（状态固定为"仅提醒"）
+        val pending = refundNoticePending(
+            packageName, rawId, postTime, title, text, bigText, notificationKey, eventStamp,
+        )
+        // 同一通知更新时若已有金额，保留已有完整条目，不退回金额未知。
+        val existing = pending.notificationInstanceId.takeIf { it.isNotBlank() }
+            ?.let { pendingDao.findByNotificationInstance(it) }
+        val now = System.currentTimeMillis()
+        val alreadyHandled = txDao.findIdByExternalId("NTF:${pending.dedupKey}") != null ||
+            LogicalTransactions.findResolvedByKey(pending.dedupKey, now) != null
+        val pendingId = if (existing != null || alreadyHandled) -1L else pendingDao.insert(pending)
+        captureDao.updateMatch(rawId, pending.ruleName, true)
         traceCapture(
             channel = CaptureChannel.NOTIFICATION,
             packageName = packageName,
             title = title, text = text, bigText = bigText,
-            capturedAt = if (postTime > 0) postTime else System.currentTimeMillis(),
-            matchedRule = "退款·待处理",
-            type = null,
+            capturedAt = postTime,
+            matchedRule = pending.ruleName,
+            type = TxType.INCOME,
             amountCents = 0,
-            dedupKey = "refund|$packageName|$postTime",
-            outcome = TraceOutcome.REFUND_NOTICE,
+            dedupKey = existing?.dedupKey ?: pending.dedupKey,
+            outcome = if (pendingId > 0) TraceOutcome.PENDING else TraceOutcome.SKIPPED_DUPLICATE,
         )
+        if (pendingId > 0) {
+            AppLog.i("Ntf", "amountless refund queued #$pendingId pkg=$packageName")
+            postRefundNotification(pending.copy(id = pendingId))
+        }
+    }
+
+    private fun postRefundNotification(pending: PendingTransactionEntity) {
         if (!isRefundLinkEnabled()) return
-        val label = NotificationRules.sourceLabel(packageName)
-        val notifId = ("refund|$packageName|$postTime").hashCode()
+        val label = NotificationRules.sourceLabelOrRule(pending.sourcePackage, pending.ruleName)
+        val amount = if (pending.amountCents > 0) " · ${Money.formatYuan(pending.amountCents)}" else ""
         postCaptureNotification(
-            "${label}退款到账",
-            "点开选择被退款的账单，记为退款收入",
-            ROUTE_REFUND_LINK,
-            notifId,
+            "退款待处理",
+            "$label$amount",
+            "$ROUTE_REFUND_LINK/${pending.id}",
+            pendingNotifId(pending.dedupKey),
+            action = ignoreAction(IgnoreTarget(pending.id, pending.dedupKey)),
         )
     }
 
@@ -3340,6 +3428,7 @@ object CaptureCenter {
                     if (lockNote) existing.note else merged.note,
                 )
                 txDao.updateFlowIdByExternalId("NTF:${existing.dedupKey}", pageFlowIdentity)
+                syncAutoEntryCategory(existing, merged.counterparty, merged.note)
                 if (merged.paymentInstrument.isNotBlank() && !lockAccount) {
                     syncAutoEntryAccount(existing, merged.paymentInstrument)
                 }
@@ -3455,6 +3544,18 @@ object CaptureCenter {
      * 找不到、或有多个同额候选时不合并（保守策略，宁可保留两条交给用户）。
      */
     private suspend fun absorbedByExisting(incoming: CaptureObservation, capturedAt: Long): Boolean {
+        // 退款处理后不保留 AUTO 条目，重启丢失内存终态后仍按正式账单唯一键拦重复。
+        // 普通 AUTO 条目仍在合并池时交给下方逻辑交易匹配，避免唯一键预检吞掉正常弹卡/富化流程。
+        val activeWithKey = pendingDao.findByDedupKey(incoming.dedupKey)
+        if (persistedCaptureDuplicate(
+                incoming.evidence.isRefund,
+                hasActivePending = activeWithKey != null,
+                transactionExists = txDao.findIdByExternalId("NTF:${incoming.dedupKey}") != null,
+            )
+        ) {
+            AppLog.d("Dedup", "capture already persisted key=${incoming.dedupKey}")
+            return true
+        }
         val hit = LogicalTransactions.findActive(pendingDao.getMergeable(), incoming, capturedAt)
             ?: return false
         val merged = mergeDuplicateCapture(
@@ -3519,6 +3620,8 @@ object CaptureCenter {
         notificationInstanceId: String = "",
         orderId: String = "",
     ): Entered? {
+        // 捕获退款始终先待处理；无金额条目也不能直接变成正式收入。
+        if (!canDirectlyEnterCapture(isRefund, amountCents)) return null
         val learned = merchantRuleDao.getAll()
         val categories = categoryDao.getAll()
         val accounts = accountDao.getAll()
